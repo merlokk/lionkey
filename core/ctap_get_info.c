@@ -32,7 +32,8 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#authenticatorGetInfo
 
 	// start response map
-	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 10));
+	const bool long_touch_for_reset = state->long_touch_for_reset_ms != 0u;
+	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 10 + (long_touch_for_reset ? 1 : 0)));
 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_versions));
 	{
@@ -159,6 +160,13 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	//   it MUST be present if the authenticator supports authenticatorClientPIN (LionKey's case).
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_minPINLength));
 	cbor_encoding_check(cbor_encode_uint(&map, ctap_get_pin_min_code_point_length(state)));
+
+	// longTouchForReset (0x18, CTAP 2.3): present and true when authenticatorReset
+	// takes a sustained touch (see ctap_reset())
+	if (long_touch_for_reset) {
+		cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_longTouchForReset));
+		cbor_encoding_check(cbor_encode_boolean(&map, true));
+	}
 
 	// close response map
 	cbor_encoding_check(cbor_encoder_close_container(encoder, &map));

@@ -149,6 +149,12 @@ typedef struct ctap_state {
 	uint32_t init_time;
 	uint32_t current_time;
 
+	// longTouchForReset (CTAP 2.3): 0 = reset takes an ordinary touch,
+	// otherwise the duration of the sustained touch it takes
+	// (and getInfo reports longTouchForReset = true).
+	// Set by the platform; ctap_init() leaves it as it is.
+	uint32_t long_touch_for_reset_ms;
+
 	ctap_pin_protocol_t pin_protocols[2];
 	uint8_t pin_boot_remaining_attempts;
 	ctap_pin_uv_auth_token_state pin_uv_auth_token_state;
@@ -221,6 +227,19 @@ static_assert(sizeof(ctap_keepalive_status_t) == 1, "sizeof(ctap_keepalive_statu
 void ctap_send_keepalive_if_needed(ctap_keepalive_status_t current_status);
 
 ctap_user_presence_result_t ctap_wait_for_user_presence(void);
+
+// CTAP 2.3: the sustained touch that longTouchForReset asks for
+#define CTAP_LONG_TOUCH_FOR_RESET_MS 5000
+
+/**
+ * Waits for a touch held for at least duration_ms (authenticatorReset with longTouchForReset).
+ *
+ * The weak default (ctap_reset.c) falls back to ctap_wait_for_user_presence().
+ * A platform that sets ctap_state_t.long_touch_for_reset_ms provides its own.
+ *
+ * @param duration_ms how long the touch must be held
+ */
+ctap_user_presence_result_t ctap_wait_for_long_touch(uint32_t duration_ms);
 
 typedef uint8_t (*ctap_command_handler_t)(ctap_state_t *state, CborValue *it, CborEncoder *encoder);
 

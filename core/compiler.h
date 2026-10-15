@@ -6,6 +6,8 @@
 
 #define LION_ATTR_PACKED         __attribute__ ((packed))
 #define LION_ATTR_ALWAYS_INLINE  __attribute__ ((always_inline))
+// a default implementation that the platform may replace with its own definition
+#define LION_ATTR_WEAK           __attribute__ ((weak))
 
 // https://gcc.gnu.org/onlinedocs/gcc/Common-Variable-Attributes.html#index-aligned-variable-attribute
 // The aligned attribute specifies a minimum alignment for the variable or structure field, measured in bytes.

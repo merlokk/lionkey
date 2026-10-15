@@ -1,5 +1,10 @@
 #include "ctap.h"
 
+LION_ATTR_WEAK ctap_user_presence_result_t ctap_wait_for_long_touch(uint32_t duration_ms) {
+	lion_unused(duration_ms);
+	return ctap_wait_for_user_presence();
+}
+
 uint8_t ctap_reset(ctap_state_t *const state, CborValue *const it, CborEncoder *const encoder) {
 
 	// This command does not take any parameters.
@@ -28,7 +33,10 @@ uint8_t ctap_reset(ctap_state_t *const state, CborValue *const it, CborEncoder *
 	// * If this command is disabled for the transport used, the authenticator returns CTAP2_ERR_OPERATION_DENIED.
 	// * If user presence is explicitly denied, the authenticator returns CTAP2_ERR_OPERATION_DENIED.
 
-	ctap_user_presence_result_t up_result = ctap_wait_for_user_presence();
+	// longTouchForReset (CTAP 2.3): the evidence of user interaction is a sustained touch
+	ctap_user_presence_result_t up_result = state->long_touch_for_reset_ms != 0u
+		? ctap_wait_for_long_touch(state->long_touch_for_reset_ms)
+		: ctap_wait_for_user_presence();
 	switch (up_result) {
 		case CTAP_UP_RESULT_CANCEL:
 			// handling of 11.2.9.1.5. CTAPHID_CANCEL (0x11)

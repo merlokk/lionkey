@@ -439,6 +439,16 @@ typedef struct CTAP_clientPIN {
 #define CTAP_authenticatorGetInfo_res_certifications                    0x13
 #define CTAP_authenticatorGetInfo_res_remainingDiscoverableCredentials  0x14
 #define CTAP_authenticatorGetInfo_res_vendorPrototypeConfigCommands     0x15
+#define CTAP_authenticatorGetInfo_res_attestationFormats                0x16
+#define CTAP_authenticatorGetInfo_res_uvCountSinceLastPinEntry          0x17
+#define CTAP_authenticatorGetInfo_res_longTouchForReset                 0x18
+#define CTAP_authenticatorGetInfo_res_encIdentifier                     0x19
+#define CTAP_authenticatorGetInfo_res_transportsForReset                0x1A
+#define CTAP_authenticatorGetInfo_res_pinComplexityPolicy               0x1B
+#define CTAP_authenticatorGetInfo_res_pinComplexityPolicyURL            0x1C
+#define CTAP_authenticatorGetInfo_res_maxPINLength                      0x1D
+#define CTAP_authenticatorGetInfo_res_encCredStoreState                 0x1E
+#define CTAP_authenticatorGetInfo_res_authenticatorConfigCommands       0x1F
 
 // 6.5.5.7. Operations to Obtain a pinUvAuthToken
 // The following pinUvAuthToken permissions are defined:
