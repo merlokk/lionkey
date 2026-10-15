@@ -2,6 +2,7 @@
 #include <gtest_custom_assertions.h>
 #include <hex.hpp>
 #include <algorithm>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <vector>
@@ -113,6 +114,11 @@ protected:
 public:
 	// makeCredential (rp `rp_id`, 3 bytes) with {"minPinLength": true}: the authenticator data
 	std::vector<uint8_t> make_credential_with_min_pin_length(const char *rp_id) {
+		return make_credential_with(rp_id, "minPinLength");
+	}
+
+	// makeCredential (rp `rp_id`, 3 bytes) with {`extension`: true}: the authenticator data
+	std::vector<uint8_t> make_credential_with(const char *rp_id, const std::string &extension) {
 		std::vector<uint8_t> r = {0xa5, 0x01, 0x58, 0x20};
 		r.insert(r.end(), 32, 0x00);
 		r.insert(r.end(), {0x02, 0xa1, 0x62, 'i', 'd', 0x63});
@@ -121,7 +127,8 @@ public:
 		r.insert(r.end(), {0x04, 0x81, 0xa2, 0x63, 'a', 'l', 'g', 0x26, 0x64, 't', 'y', 'p', 'e',
 			0x6a, 'p', 'u', 'b', 'l', 'i', 'c', '-', 'k', 'e', 'y'});
 		r.insert(r.end(), {0x06, 0xa1});
-		r.insert(r.end(), min_pin_length_key_bytes, min_pin_length_key_bytes + 13);
+		r.push_back(static_cast<uint8_t>(0x60 | extension.size())); // < 24 bytes
+		r.insert(r.end(), extension.begin(), extension.end());
 		r.push_back(0xf5);
 		request(CTAP_CMD_MAKE_CREDENTIAL, r);
 		EXPECT_EQ(status, CTAP2_OK);
@@ -393,6 +400,10 @@ std::vector<uint8_t> make_credential_min_pin_length(CtapConfigTest *t, const cha
 	return t->make_credential_with_min_pin_length(rp_id);
 }
 
+std::vector<uint8_t> make_credential_with_extension(CtapConfigTest *t, const char *rp_id, const char *extension) {
+	return t->make_credential_with(rp_id, extension);
+}
+
 TEST_F(CtapConfigTest, SetMinPinLengthStoresRpIds) {
 	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"a.b", "x.y"}));
 	EXPECT_EQ(status, CTAP2_OK);
@@ -570,6 +581,81 @@ TEST_F(CtapConfigTest, ResetWindowLonger) {
 	test_current_time = 20000u + 30001u; // reset restarts the window (ctap_init)
 	request(CTAP_CMD_RESET);
 	EXPECT_EQ(status, CTAP2_ERR_NOT_ALLOWED);
+}
+
+
+// PIN complexity policy (pinComplexityPolicy)
+
+TEST_F(CtapConfigTest, PinComplexityPolicyOffByDefault) {
+	EXPECT_FALSE(get_info_bool(CTAP_authenticatorGetInfo_res_pinComplexityPolicy));
+	EXPECT_FALSE(get_info_member(CTAP_authenticatorGetInfo_res_pinComplexityPolicyURL).has_value());
+	request(CTAP_CMD_GET_INFO);
+	EXPECT_TRUE(test_validate_cbor(response.data, response.length));
+}
+
+TEST_F(CtapConfigTest, PinComplexityPolicyPreconfigured) {
+	ctap.pin_complexity_policy_preconfigured = true;
+	ctap.pin_complexity_policy_url = "https://example.com/pin";
+	EXPECT_TRUE(get_info_bool(CTAP_authenticatorGetInfo_res_pinComplexityPolicy));
+	auto url = get_info_member(CTAP_authenticatorGetInfo_res_pinComplexityPolicyURL);
+	ASSERT_TRUE(url.has_value());
+	EXPECT_TRUE(cbor_value_is_byte_string(&*url));
+	request(CTAP_CMD_GET_INFO);
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_TRUE(test_validate_cbor(response.data, response.length));
+	const std::vector<uint8_t> data(response.data, response.data + response.length);
+	const std::string id = "pinComplexityPolicy";
+	EXPECT_TRUE(contains(data, std::vector<uint8_t>(id.begin(), id.end()))); // in extensions
+	// a reset keeps the pre-configured value
+	request(CTAP_CMD_RESET);
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_TRUE(ctap_is_pin_complexity_policy(&ctap));
+}
+
+TEST_F(CtapConfigTest, SetMinPinLengthEnablesPinComplexityPolicyUntilReset) {
+	// {4: true}
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, {0xa1, 0x04, 0xf5});
+	EXPECT_EQ(status, CTAP2_OK);
+	EXPECT_TRUE(get_info_bool(CTAP_authenticatorGetInfo_res_pinComplexityPolicy));
+	// {4: false} does not turn it off
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, {0xa1, 0x04, 0xf4});
+	EXPECT_EQ(status, CTAP2_OK);
+	EXPECT_TRUE(ctap_is_pin_complexity_policy(&ctap));
+	ctap_init(&ctap);
+	EXPECT_TRUE(ctap_is_pin_complexity_policy(&ctap));
+	request(CTAP_CMD_RESET);
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_FALSE(ctap_is_pin_complexity_policy(&ctap));
+}
+
+TEST_F(CtapConfigTest, PinComplexityPolicyExtensionForAListedRp) {
+	ctap.pin_complexity_policy_preconfigured = true;
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"a.b"}));
+	ASSERT_EQ(status, CTAP2_OK);
+	auto auth_data = make_credential_with_extension(this, "a.b", "pinComplexityPolicy");
+	const std::string id = "pinComplexityPolicy";
+	std::vector<uint8_t> expected{0x73};
+	expected.insert(expected.end(), id.begin(), id.end());
+	expected.push_back(0xf5);
+	EXPECT_TRUE(contains(auth_data, expected));
+	auto other = make_credential_with_extension(this, "c.d", "pinComplexityPolicy");
+	ASSERT_GT(other.size(), 37u);
+	EXPECT_EQ(other[32] & CTAP_authenticator_data_flags_ed, 0);
+}
+
+// the weak default policy (a platform may replace it)
+bool meets(const char *pin) {
+	return ctap_pin_meets_complexity_policy(reinterpret_cast<const uint8_t *>(pin), strlen(pin));
+}
+
+TEST(CtapPinComplexityDefault, RefusesRepeatsAndDigitRuns) {
+	EXPECT_FALSE(meets("1111"));
+	EXPECT_FALSE(meets("aaaa"));
+	EXPECT_FALSE(meets("1234"));
+	EXPECT_FALSE(meets("987654"));
+	EXPECT_TRUE(meets("1357"));
+	EXPECT_TRUE(meets("1243"));
+	EXPECT_TRUE(meets("ABCD"));
 }
 
 } // namespace

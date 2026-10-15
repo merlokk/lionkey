@@ -101,7 +101,8 @@ static uint8_t encode_make_credential_authenticator_data_extensions(
 	size_t *extensions_size,
 	const uint8_t extensions_present,
 	const ctap_credential_handle_t *credential,
-	const uint8_t min_pin_length
+	const uint8_t min_pin_length,
+	const bool pin_complexity_policy
 ) {
 
 	CborEncoder encoder;
@@ -120,6 +121,9 @@ static uint8_t encode_make_credential_authenticator_data_extensions(
 	if ((extensions_present & CTAP_extension_minPinLength) != 0u) {
 		num_extensions_in_output_map++;
 	}
+	if ((extensions_present & CTAP_extension_pinComplexityPolicy) != 0u) {
+		num_extensions_in_output_map++;
+	}
 
 	cbor_encoding_check(cbor_encoder_create_map(&encoder, &map, num_extensions_in_output_map));
 	if ((extensions_present & CTAP_extension_credProtect) != 0u) {
@@ -135,6 +139,11 @@ static uint8_t encode_make_credential_authenticator_data_extensions(
 	if ((extensions_present & CTAP_extension_minPinLength) != 0u) {
 		cbor_encoding_check(cbor_encode_text_string(&map, "minPinLength", 12));
 		cbor_encoding_check(cbor_encode_uint(&map, min_pin_length));
+	}
+	// "pinComplexityPolicy" (19) last
+	if ((extensions_present & CTAP_extension_pinComplexityPolicy) != 0u) {
+		cbor_encoding_check(cbor_encode_text_string(&map, "pinComplexityPolicy", 19));
+		cbor_encoding_check(cbor_encode_boolean(&map, pin_complexity_policy));
 	}
 	cbor_encoding_check(cbor_encoder_close_container(&encoder, &map));
 
@@ -774,13 +783,15 @@ uint8_t ctap_make_credential(ctap_state_t *const state, CborValue *const it, Cbo
 	auth_data_variable_size += attested_credential_data_size;
 	auth_data.fixed_header.flags |= CTAP_authenticator_data_flags_at;
 
-	// 12.4. minPinLength: the output only for an RP ID in minPinLengthRPIDs (else omitted)
+	// 12.4. minPinLength and 12.6. pinComplexityPolicy:
+	// the output only for an RP ID in minPinLengthRPIDs (else omitted)
 	uint8_t extensions_output = params->extensions_present;
+	const uint8_t listed_only = CTAP_extension_minPinLength | CTAP_extension_pinComplexityPolicy;
 	if ((
-		(extensions_output & CTAP_extension_minPinLength) != 0u
+		(extensions_output & listed_only) != 0u
 		&& !ctap_min_pin_length_rp_id_allowed(state, params->rpId.hash)
 	)) {
-		extensions_output &= (uint8_t) ~CTAP_extension_minPinLength;
+		extensions_output &= (uint8_t) ~listed_only;
 	}
 	// no output at all: no extensions in the authenticator data (and no ED flag)
 	if (ctap_param_is_present(params, CTAP_makeCredential_extensions) && extensions_output != 0u) {
@@ -791,7 +802,8 @@ uint8_t ctap_make_credential(ctap_state_t *const state, CborValue *const it, Cbo
 			&extensions_size,
 			extensions_output,
 			&credential,
-			ctap_get_pin_min_code_point_length(state)
+			ctap_get_pin_min_code_point_length(state),
+			ctap_is_pin_complexity_policy(state)
 		));
 		auth_data_variable_size += extensions_size;
 		auth_data.fixed_header.flags |= CTAP_authenticator_data_flags_ed;

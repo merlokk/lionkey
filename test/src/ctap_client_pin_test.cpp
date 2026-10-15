@@ -868,4 +868,30 @@ TEST_F(CtapClientPinForceChangeTest, ChangePinClearsIt) {
 	EXPECT_FALSE(ctap_is_force_pin_change(&ctap));
 }
 
+
+TEST_F(CtapClientPinForceChangeTest, PinComplexityPolicyRefusesARun) {
+	ctap.pin_complexity_policy_preconfigured = true;
+	auto params_set_pin_1234 = create_set_pin_v1(
+		test_platform_public_key_x,
+		test_platform_public_key_y,
+		hex::bytes<
+			"a8adf691fc0931227817b435a7bcf1f192b4198799416c1cfff993e46182aaca"
+			"dc4b21517bcbe58cecbb606a8df1cedf40cb7c79c86bc8f3142502175643450f"
+		>(),
+		hex::bytes<
+			"ca787d2f472d341660b372a629551dd2"
+		>()
+	);
+	test_ctap_client_pin(params_set_pin_1234);
+	EXPECT_EQ(status, CTAP2_ERR_PIN_POLICY_VIOLATION);
+	EXPECT_FALSE(ctap_is_pin_set(&ctap));
+}
+
+TEST_F(CtapClientPinForceChangeTest, PinComplexityPolicyAllowsAChangeToABCD) {
+	set_pin_1234_v1();
+	ctap.pin_complexity_policy_preconfigured = true; // 1234 stays: only a new PIN is checked
+	change_pin_1234_to_ABCD_v1();
+	EXPECT_EQ(status, CTAP2_OK);
+}
+
 } // namespace

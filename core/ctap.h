@@ -78,6 +78,8 @@ static_assert(
 #define CTAP_CONFIG_flags_force_pin_change       (1u << 1)
 // enableLongTouchForReset (CTAP 2.3) was invoked
 #define CTAP_CONFIG_flags_long_touch_for_reset   (1u << 2)
+// setMinPINLength pinComplexityPolicy: true (only a reset turns it off)
+#define CTAP_CONFIG_flags_pin_complexity_policy  (1u << 3)
 typedef struct LION_ATTR_PACKED ctap_config_persistent_state {
 	uint8_t flags;
 	uint8_t reserved[3];
@@ -177,6 +179,15 @@ typedef struct ctap_state {
 	// Set by the platform; ctap_init() leaves it as it is.
 	uint32_t reset_window_ms;
 
+	// PIN complexity policy (pinComplexityPolicy, getInfo 0x1B): the pre-configured value
+	// (also after a reset); setMinPINLength can turn it on, only a reset off again.
+	// The policy itself: ctap_pin_meets_complexity_policy().
+	// Set by the platform; ctap_init() leaves it as it is.
+	bool pin_complexity_policy_preconfigured;
+	// pinComplexityPolicyURL (getInfo 0x1C): where the platform can tell the user about the policy;
+	// NULL = absent. Set by the platform.
+	const char *pin_complexity_policy_url;
+
 	ctap_config_persistent_state_t config_state LION_ATTR_ALIGNED(4);
 	uint32_t config_state_item_handle;
 
@@ -206,6 +217,11 @@ LION_ATTR_ALWAYS_INLINE static inline bool ctap_is_always_uv(const ctap_state_t 
 
 LION_ATTR_ALWAYS_INLINE static inline bool ctap_is_force_pin_change(const ctap_state_t *const state) {
 	return (state->config_state.flags & CTAP_CONFIG_flags_force_pin_change) != 0u;
+}
+
+LION_ATTR_ALWAYS_INLINE static inline bool ctap_is_pin_complexity_policy(const ctap_state_t *const state) {
+	return state->pin_complexity_policy_preconfigured
+		|| (state->config_state.flags & CTAP_CONFIG_flags_pin_complexity_policy) != 0u;
 }
 
 #define CTAP_RESET_WINDOW_DEFAULT_MS (10u * 1000u)
@@ -263,6 +279,18 @@ static_assert(sizeof(ctap_keepalive_status_t) == 1, "sizeof(ctap_keepalive_statu
 void ctap_send_keepalive_if_needed(ctap_keepalive_status_t current_status);
 
 ctap_user_presence_result_t ctap_wait_for_user_presence(void);
+
+/**
+ * The PIN complexity policy: whether a new PIN (setPIN, changePIN) is complex enough,
+ * beyond the minimum PIN length (checked only while ctap_is_pin_complexity_policy()).
+ *
+ * The weak default (ctap_pin.c) refuses one character repeated and a run of digits
+ * up or down (e.g. 1111, 1234, 9876). A platform may provide its own.
+ *
+ * @param pin the new PIN (UTF-8, without the 0x00 padding)
+ * @param pin_length its length in bytes
+ */
+bool ctap_pin_meets_complexity_policy(const uint8_t *pin, size_t pin_length);
 
 // CTAP 2.3: the sustained touch that longTouchForReset asks for
 #define CTAP_LONG_TOUCH_FOR_RESET_MS 5000

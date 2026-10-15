@@ -1,3 +1,4 @@
+#include <string.h>
 #include "ctap.h"
 
 static const COSEAlgorithmIdentifier ctap_supported_pub_key_cred_alg[] = {
@@ -32,8 +33,11 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#authenticatorGetInfo
 
 	// start response map
-	// 10 members + forcePINChange, maxRPIDsForSetMinPINLength, longTouchForReset, authenticatorConfigCommands
-	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 14));
+	// 10 members + forcePINChange, maxRPIDsForSetMinPINLength, longTouchForReset, pinComplexityPolicy,
+	// (pinComplexityPolicyURL), authenticatorConfigCommands
+	const bool pin_complexity_policy = ctap_is_pin_complexity_policy(state);
+	const bool pin_complexity_policy_url = state->pin_complexity_policy_url != NULL;
+	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 15 + (pin_complexity_policy_url ? 1 : 0)));
 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_versions));
 	{
@@ -47,10 +51,14 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_extensions));
 	{
 		CborEncoder array;
-		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 3));
+		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 3 + (pin_complexity_policy ? 1 : 0)));
 		cbor_encoding_check(cbor_encode_text_string(&array, "credProtect", 11));
 		cbor_encoding_check(cbor_encode_text_string(&array, "hmac-secret", 11));
 		cbor_encoding_check(cbor_encode_text_string(&array, "minPinLength", 12));
+		// MUST be listed while the PIN complexity policy is enabled
+		if (pin_complexity_policy) {
+			cbor_encoding_check(cbor_encode_text_string(&array, "pinComplexityPolicy", 19));
+		}
 		cbor_encoding_check(cbor_encoder_close_container(&map, &array));
 	}
 
@@ -190,6 +198,20 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// true = authenticatorReset takes a sustained touch (see ctap_reset())
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_longTouchForReset));
 	cbor_encoding_check(cbor_encode_boolean(&map, ctap_get_long_touch_for_reset_ms(state) != 0u));
+
+	// pinComplexityPolicy (0x1B): whether an additional PIN complexity policy is enforced
+	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_pinComplexityPolicy));
+	cbor_encoding_check(cbor_encode_boolean(&map, pin_complexity_policy));
+
+	// pinComplexityPolicyURL (0x1C): more information about the policy for the user
+	if (pin_complexity_policy_url) {
+		cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_pinComplexityPolicyURL));
+		cbor_encoding_check(cbor_encode_byte_string(
+			&map,
+			(const uint8_t *) state->pin_complexity_policy_url,
+			strlen(state->pin_complexity_policy_url)
+		));
+	}
 
 	// authenticatorConfigCommands (0x1F, CTAP 2.3): the supported authenticatorConfig subcommands
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_authenticatorConfigCommands));

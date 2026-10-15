@@ -157,7 +157,11 @@ static uint8_t config_set_min_pin_length(ctap_state_t *const state, const CTAP_a
 		return CTAP2_ERR_PIN_NOT_SET;
 	}
 
-	// 5. pinComplexityPolicy: not supported (no PIN complexity policy yet), ignored.
+	// 5. If pinComplexityPolicy is true, set pinComplexityPolicy to true in getInfo
+	//    (until a reset; applied with the other changes below).
+	const bool enable_pin_complexity_policy = params_present
+		&& ctap_param_is_present(params, CTAP_authenticatorConfig_setMinPINLength_pinComplexityPolicy)
+		&& params->pinComplexityPolicy;
 
 	// 6. If a PIN is set and PINCodePointLength < newMinPINLength, set forcePINChange.
 	const bool force = force_change_pin
@@ -167,6 +171,11 @@ static uint8_t config_set_min_pin_length(ctap_state_t *const state, const CTAP_a
 	if (new_min != current_min) {
 		state->pin_state.pin_min_code_point_length = new_min;
 		ctap_update_pin_persistent_state(state);
+	}
+
+	if (enable_pin_complexity_policy) {
+		uint8_t ret;
+		ctap_check(set_config_flags(state, CTAP_CONFIG_flags_pin_complexity_policy, 0u));
 	}
 
 	if (force) {

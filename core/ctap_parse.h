@@ -274,6 +274,7 @@ static_assert(
 #define CTAP_extension_credProtect   (1u << 0)
 #define CTAP_extension_hmac_secret   (1u << 1)
 #define CTAP_extension_minPinLength  (1u << 2)
+#define CTAP_extension_pinComplexityPolicy  (1u << 3)
 // 12.1. Credential Protection (credProtect)
 // https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#sctn-credProtect-extension
 #define CTAP_extension_credProtect_1_userVerificationOptional                      0x01

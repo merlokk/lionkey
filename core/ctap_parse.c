@@ -548,6 +548,19 @@ static uint8_t parse_make_credential_extensions(CborValue *it, CTAP_makeCredenti
 			}
 			cbor_decoding_check(cbor_value_advance_fixed(&map));
 
+		} else if (ctap_string_matches(&key, &ctap_str("pinComplexityPolicy"))) {
+
+			// 12.6. PIN Complexity Extension (pinComplexityPolicy)
+
+			debug_log("pinComplexityPolicy" nl);
+			ctap_cbor_ensure_type(cbor_value_is_boolean(&map));
+			bool value;
+			cbor_decoding_check(cbor_value_get_boolean(&map, &value));
+			if (value) {
+				params->extensions_present |= CTAP_extension_pinComplexityPolicy;
+			}
+			cbor_decoding_check(cbor_value_advance_fixed(&map));
+
 		} else if (ctap_string_matches(&key, &ctap_str("hmac-secret"))) {
 
 			// 12.5. HMAC Secret Extension (hmac-secret)

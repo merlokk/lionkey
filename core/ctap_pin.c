@@ -55,6 +55,22 @@ static void update_persistent_pin_state(ctap_state_t *state) {
 	}
 }
 
+LION_ATTR_WEAK bool ctap_pin_meets_complexity_policy(const uint8_t *pin, size_t pin_length) {
+	if (pin_length < 2) {
+		return true;
+	}
+	bool repeated = true;
+	bool up = true;
+	bool down = true;
+	for (size_t i = 1; i < pin_length; ++i) {
+		repeated = repeated && pin[i] == pin[0];
+		const bool digits = pin[i - 1] >= '0' && pin[i - 1] <= '9' && pin[i] >= '0' && pin[i] <= '9';
+		up = up && digits && pin[i] == pin[i - 1] + 1;
+		down = down && digits && pin[i] + 1 == pin[i - 1];
+	}
+	return !repeated && !up && !down;
+}
+
 void ctap_update_pin_persistent_state(ctap_state_t *state) {
 	update_persistent_pin_state(state);
 }
@@ -273,6 +289,11 @@ static uint8_t set_pin(
 		return CTAP2_ERR_PIN_POLICY_VIOLATION;
 	}
 	assert(new_pin_code_point_length <= 63);
+
+	// The PIN complexity policy (pinComplexityPolicy) is one of these additional constraints.
+	if (ctap_is_pin_complexity_policy(state) && !ctap_pin_meets_complexity_policy(new_pin, new_pin_length)) {
+		return CTAP2_ERR_PIN_POLICY_VIOLATION;
+	}
 
 	// 6.5.5.5. Setting a New PIN:     5.11, 5.12
 	// 6.5.5.6. Changing existing PIN: 5.15, 5.17
