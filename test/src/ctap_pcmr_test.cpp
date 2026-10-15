@@ -3,6 +3,7 @@
 #include <hex.hpp>
 #include <algorithm>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 extern "C" {
@@ -107,7 +108,7 @@ protected:
 		.data = ctap_response_buffer,
 	};
 	uint8_t status{};
-	const std::string pin = "4826";
+	std::string pin = "4826"; // changePIN tests change it
 
 	CtapPcmrTest() {
 		test_reset_user_presence();
@@ -187,6 +188,135 @@ protected:
 		r.insert(r.end(), {0x03, 0x01, 0x04});
 		append_bstr(r, bytes(mac.begin(), mac.begin() + 16));
 		request(CTAP_CMD_CREDENTIAL_MANAGEMENT, r);
+	}
+
+	// clientPIN changePIN (protocol one) from `pin` to `new_pin`; `pin` follows on success
+	void change_pin(const std::string &new_pin) {
+		const bytes shared = shared_secret();
+		const bytes pin_hash = sha256(bytes(pin.begin(), pin.end()));
+		const bytes pin_hash_enc = aes_cbc(shared, bytes(pin_hash.begin(), pin_hash.begin() + 16), true);
+		bytes padded(64, 0x00);
+		std::copy(new_pin.begin(), new_pin.end(), padded.begin());
+		const bytes new_pin_enc = aes_cbc(shared, padded, true);
+		bytes message(new_pin_enc);
+		message.insert(message.end(), pin_hash_enc.begin(), pin_hash_enc.end());
+		const bytes mac = hmac_sha256(shared, message);
+		bytes r{0xa6, 0x01, 0x01, 0x02, CTAP_clientPIN_subCmd_changePIN, 0x03, 0xa5, 0x01, 0x02, 0x03, 0x38, 0x18, 0x20, 0x01, 0x21, 0x58, 0x20};
+		r.insert(r.end(), platform_public_x.begin(), platform_public_x.end());
+		r.insert(r.end(), {0x22, 0x58, 0x20});
+		r.insert(r.end(), platform_public_y.begin(), platform_public_y.end());
+		r.push_back(0x04);
+		append_bstr(r, bytes(mac.begin(), mac.begin() + 16));
+		r.push_back(0x05);
+		append_bstr(r, new_pin_enc);
+		r.push_back(0x06);
+		append_bstr(r, pin_hash_enc);
+		request(CTAP_CMD_CLIENT_PIN, r);
+		if (status == CTAP2_OK) {
+			pin = new_pin;
+		}
+	}
+
+	// authenticatorConfig setMinPINLength with an acfg token (protocol one):
+	// pinUvAuthParam = LEFT(HMAC(token, 32 x 0xff || 0x0d || subCommand || subCommandParams), 16)
+	void set_min_pin_length(const bytes &sub_params) {
+		const bytes acfg = token(CTAP_clientPIN_pinUvAuthToken_permission_acfg);
+		ASSERT_EQ(acfg.size(), 32u);
+		bytes message(32, 0xff);
+		message.push_back(CTAP_CMD_CONFIG);
+		message.push_back(CTAP_authenticatorConfig_subCmd_setMinPINLength);
+		message.insert(message.end(), sub_params.begin(), sub_params.end());
+		const bytes mac = hmac_sha256(acfg, message);
+		bytes r{0xa4, 0x01, CTAP_authenticatorConfig_subCmd_setMinPINLength, 0x02};
+		r.insert(r.end(), sub_params.begin(), sub_params.end());
+		r.insert(r.end(), {0x03, 0x01, 0x04});
+		append_bstr(r, bytes(mac.begin(), mac.begin() + 16));
+		request(CTAP_CMD_CONFIG, r);
+	}
+
+	// a discoverable credential for "a.b" (user id h'01', an mc token); its credential ID
+	bytes make_discoverable_credential() {
+		const bytes mc = token(CTAP_clientPIN_pinUvAuthToken_permission_mc);
+		EXPECT_EQ(mc.size(), 32u);
+		const bytes client_data_hash(32, 0x11);
+		const bytes mac = hmac_sha256(mc, client_data_hash);
+		bytes r{0xa7, 0x01};
+		append_bstr(r, client_data_hash);
+		r.insert(r.end(), {0x02, 0xa1, 0x62, 'i', 'd', 0x63, 'a', '.', 'b'});
+		r.insert(r.end(), {0x03, 0xa2, 0x62, 'i', 'd', 0x41, 0x01, 0x64, 'n', 'a', 'm', 'e', 0x61, 'u'});
+		r.insert(r.end(), {0x04, 0x81, 0xa2, 0x63, 'a', 'l', 'g', 0x26, 0x64, 't', 'y', 'p', 'e',
+			0x6a, 'p', 'u', 'b', 'l', 'i', 'c', '-', 'k', 'e', 'y'});
+		r.insert(r.end(), {0x07, 0xa1, 0x62, 'r', 'k', 0xf5, 0x08});
+		append_bstr(r, bytes(mac.begin(), mac.begin() + 16));
+		r.insert(r.end(), {0x09, 0x01});
+		request(CTAP_CMD_MAKE_CREDENTIAL, r);
+		EXPECT_EQ(status, CTAP2_OK);
+		if (status != CTAP2_OK) {
+			return {};
+		}
+		// {2: authData}: rpIdHash (32) || flags (1) || signCount (4) || aaguid (16) || L (2) || credentialId (L)
+		CborParser parser;
+		CborValue it;
+		CborValue map;
+		EXPECT_EQ(cbor_parser_init(response.data, response.length, 0, &parser, &it), CborNoError);
+		EXPECT_EQ(cbor_value_enter_container(&it, &map), CborNoError);
+		while (!cbor_value_at_end(&map)) {
+			uint64_t k;
+			EXPECT_EQ(cbor_value_get_uint64(&map, &k), CborNoError);
+			EXPECT_EQ(cbor_value_advance(&map), CborNoError);
+			if (k == 2) {
+				size_t n = 0;
+				EXPECT_EQ(cbor_value_calculate_string_length(&map, &n), CborNoError);
+				bytes auth_data(n);
+				EXPECT_EQ(cbor_value_copy_byte_string(&map, auth_data.data(), &n, nullptr), CborNoError);
+				EXPECT_GE(auth_data.size(), 55u);
+				if (auth_data.size() < 55) {
+					return {};
+				}
+				const size_t length = (size_t(auth_data[53]) << 8) | auth_data[54];
+				EXPECT_GE(auth_data.size(), 55 + length);
+				if (auth_data.size() < 55 + length) {
+					return {};
+				}
+				return bytes(auth_data.begin() + 55, auth_data.begin() + 55 + length);
+			}
+			EXPECT_EQ(cbor_value_advance(&map), CborNoError);
+		}
+		ADD_FAILURE() << "no authData";
+		return {};
+	}
+
+	// {2: {"id": credential_id, "type": "public-key"}} (+ 3: user)
+	static bytes credential_params(const bytes &credential_id, const bytes &user = {}) {
+		bytes params{static_cast<uint8_t>(user.empty() ? 0xa1 : 0xa2), 0x02, 0xa2, 0x62, 'i', 'd'};
+		append_bstr(params, credential_id);
+		params.insert(params.end(), {0x64, 't', 'y', 'p', 'e', 0x6a, 'p', 'u', 'b', 'l', 'i', 'c', '-', 'k', 'e', 'y'});
+		if (!user.empty()) {
+			params.push_back(0x03);
+			params.insert(params.end(), user.begin(), user.end());
+		}
+		return params;
+	}
+
+	// the response map member `key` as an unsigned integer
+	std::optional<uint64_t> response_uint(uint64_t key) {
+		CborParser parser;
+		CborValue it;
+		CborValue map;
+		EXPECT_EQ(cbor_parser_init(response.data, response.length, 0, &parser, &it), CborNoError);
+		EXPECT_EQ(cbor_value_enter_container(&it, &map), CborNoError);
+		while (!cbor_value_at_end(&map)) {
+			uint64_t k;
+			EXPECT_EQ(cbor_value_get_uint64(&map, &k), CborNoError);
+			EXPECT_EQ(cbor_value_advance(&map), CborNoError);
+			if (k == key) {
+				uint64_t v;
+				EXPECT_EQ(cbor_value_get_uint64(&map, &v), CborNoError);
+				return v;
+			}
+			EXPECT_EQ(cbor_value_advance(&map), CborNoError);
+		}
+		return std::nullopt;
 	}
 };
 
@@ -274,6 +404,84 @@ TEST_F(CtapPcmrTest, ResetMakesItInvalid) {
 	EXPECT_FALSE(ctap.persistent_pin_uv_auth_tokens_ready);
 }
 
+TEST_F(CtapPcmrTest, ChangePinDropsIt) {
+	const bytes persistent = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(persistent.size(), 32u);
+	change_pin("73915");
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_FALSE(ctap.persistent_pin_uv_auth_tokens_ready);
+	cred_mgmt(persistent, CTAP_credentialManagement_subCmd_getCredsMetadata);
+	EXPECT_EQ(status, CTAP2_ERR_PIN_AUTH_INVALID);
+	// a new one with the new PIN
+	const bytes fresh = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(fresh.size(), 32u);
+	EXPECT_NE(fresh, persistent);
+	cred_mgmt(fresh, CTAP_credentialManagement_subCmd_getCredsMetadata);
+	EXPECT_EQ(status, CTAP2_OK);
+}
+
+TEST_F(CtapPcmrTest, SetMinPinLengthForceChangePinDropsIt) {
+	const bytes persistent = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(persistent.size(), 32u);
+	set_min_pin_length({0xa1, 0x03, 0xf5}); // {3: true} forceChangePin, the minimum unchanged
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_FALSE(ctap.persistent_pin_uv_auth_tokens_ready);
+	cred_mgmt(persistent, CTAP_credentialManagement_subCmd_getCredsMetadata);
+	EXPECT_EQ(status, CTAP2_ERR_PIN_AUTH_INVALID);
+	// no token until the PIN is changed
+	EXPECT_TRUE(token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr).empty());
+	EXPECT_EQ(status, CTAP2_ERR_PIN_POLICY_VIOLATION);
+}
+
+TEST_F(CtapPcmrTest, SetMinPinLengthAboveThePinDropsIt) {
+	const bytes persistent = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(persistent.size(), 32u);
+	set_min_pin_length({0xa1, 0x01, 0x06}); // {1: 6} newMinPINLength, the PIN has 4
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_FALSE(ctap.persistent_pin_uv_auth_tokens_ready);
+	cred_mgmt(persistent, CTAP_credentialManagement_subCmd_getCredsMetadata);
+	EXPECT_EQ(status, CTAP2_ERR_PIN_AUTH_INVALID);
+}
+
+TEST_F(CtapPcmrTest, CannotUpdateUserInformation) {
+	const bytes credential_id = make_discoverable_credential();
+	ASSERT_FALSE(credential_id.empty());
+	const bytes persistent = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(persistent.size(), 32u);
+	// 3: {"id": h'01', "name": "v"}
+	const bytes user{0xa2, 0x62, 'i', 'd', 0x41, 0x01, 0x64, 'n', 'a', 'm', 'e', 0x61, 'v'};
+	cred_mgmt(persistent, CTAP_credentialManagement_subCmd_updateUserInformation, credential_params(credential_id, user));
+	EXPECT_EQ(status, CTAP2_ERR_PIN_AUTH_INVALID);
+}
+
+TEST_F(CtapPcmrTest, ReadsAStoredCredentialWithoutRpIdRules) {
+	ASSERT_FALSE(make_discoverable_credential().empty());
+	// the regular token gets a permissions RP ID, which would refuse getCredsMetadata / enumerateRPsBegin
+	ASSERT_EQ(token(CTAP_clientPIN_pinUvAuthToken_permission_ga).size(), 32u);
+	ASSERT_TRUE(ctap.pin_uv_auth_token_state.rpId_set);
+	const bytes persistent = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(persistent.size(), 32u);
+	ASSERT_TRUE(ctap.pin_uv_auth_token_state.rpId_set);
+
+	cred_mgmt(persistent, CTAP_credentialManagement_subCmd_getCredsMetadata);
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(response_uint(CTAP_credentialManagement_res_existingResidentCredentialsCount), std::optional<uint64_t>(1));
+
+	cred_mgmt(persistent, CTAP_credentialManagement_subCmd_enumerateRPsBegin);
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(response_uint(CTAP_credentialManagement_res_totalRPs), std::optional<uint64_t>(1));
+	const bytes r(response.data, response.data + response.length);
+	const bytes rp_id{0x62, 'i', 'd', 0x63, 'a', '.', 'b'};
+	EXPECT_NE(std::search(r.begin(), r.end(), rp_id.begin(), rp_id.end()), r.end());
+
+	const std::string rp = "a.b";
+	bytes rp_params{0xa1, 0x01};
+	append_bstr(rp_params, sha256(bytes(rp.begin(), rp.end())));
+	cred_mgmt(persistent, CTAP_credentialManagement_subCmd_enumerateCredentialsBegin, rp_params);
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(response_uint(CTAP_credentialManagement_res_totalCredentials), std::optional<uint64_t>(1));
+}
+
 
 // --- encIdentifier / encCredStoreState (getInfo 0x19 / 0x1E)
 
@@ -311,8 +519,9 @@ TEST(CtapAes128, Fips197) {
 class CtapEncGetInfoTest : public CtapPcmrTest {
 protected:
 	// getInfo member `key` as bytes, empty when absent
-	bytes get_info_bytes(uint64_t key) {
-		request(CTAP_CMD_GET_INFO, {});
+	// (`state`: another ctap state, default this one)
+	bytes get_info_bytes(uint64_t key, ctap_state_t *state = nullptr) {
+		status = ctap_request(state != nullptr ? state : &ctap, CTAP_CMD_GET_INFO, 0, nullptr, &response);
 		EXPECT_EQ(status, CTAP2_OK);
 		EXPECT_TRUE(test_validate_cbor(response.data, response.length));
 		CborParser parser;
@@ -414,6 +623,107 @@ TEST_F(CtapEncGetInfoTest, ResetMakesANewIdentifier) {
 	ASSERT_EQ(fresh.size(), 32u);
 	EXPECT_NE(decrypt_get_info_member(fresh, "encIdentifier",
 		get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier)), id1);
+}
+
+TEST_F(CtapEncGetInfoTest, LegacyPerProtocolTokensAreDroppedAtLoad) {
+	// permissions (pcmr, little-endian) || protocol one token || protocol two token: they differ
+	bytes data{CTAP_clientPIN_pinUvAuthToken_permission_pcmr, 0x00, 0x00, 0x00};
+	const bytes legacy_one(32, 0xa1);
+	data.insert(data.end(), legacy_one.begin(), legacy_one.end());
+	data.insert(data.end(), 32, 0xb2);
+	ctap_storage_item_t item{
+		.handle = 0,
+		.key = CTAP_STORAGE_KEY_PERSISTENT_PUAT,
+		.size = data.size(),
+		.data = data.data(),
+	};
+	ASSERT_EQ(storage.create_or_update_item(&storage, &item), CTAP_STORAGE_OK);
+
+	ctap_init(&ctap); // a power cycle loads (and drops) them
+	EXPECT_FALSE(ctap.persistent_pin_uv_auth_tokens_ready);
+	ctap_storage_item_t stored{
+		.key = CTAP_STORAGE_KEY_PERSISTENT_PUAT,
+	};
+	EXPECT_NE(storage.find_item(&storage, &stored), CTAP_STORAGE_OK);
+	EXPECT_TRUE(get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier).empty());
+	cred_mgmt(legacy_one, CTAP_credentialManagement_subCmd_getCredsMetadata);
+	EXPECT_EQ(status, CTAP2_ERR_PIN_AUTH_INVALID);
+
+	// a new pcmr request: one token for both protocols
+	const bytes fresh = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(fresh.size(), 32u);
+	EXPECT_NE(fresh, legacy_one);
+	EXPECT_TRUE(std::equal(
+		ctap.pin_protocols[0].persistent_pin_uv_auth_token,
+		ctap.pin_protocols[0].persistent_pin_uv_auth_token + 32,
+		ctap.pin_protocols[1].persistent_pin_uv_auth_token
+	));
+	EXPECT_EQ(get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier).size(), 32u);
+}
+
+TEST_F(CtapEncGetInfoTest, ChangePinKeepsTheIdentifier) {
+	const bytes persistent = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(persistent.size(), 32u);
+	const bytes id1 = decrypt_get_info_member(persistent, "encIdentifier",
+		get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier));
+	ASSERT_EQ(id1.size(), 16u);
+	change_pin("73915");
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_TRUE(get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier).empty());
+	const bytes again = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(again.size(), 32u);
+	EXPECT_NE(again, persistent);
+	EXPECT_EQ(decrypt_get_info_member(again, "encIdentifier",
+		get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier)), id1);
+}
+
+TEST_F(CtapEncGetInfoTest, StoreStateChangesOnDelete) {
+	const bytes credential_id = make_discoverable_credential();
+	ASSERT_FALSE(credential_id.empty());
+	const bytes persistent = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(persistent.size(), 32u);
+	const bytes state1 = decrypt_get_info_member(persistent, "encCredStoreState",
+		get_info_bytes(CTAP_authenticatorGetInfo_res_encCredStoreState));
+	ASSERT_EQ(state1.size(), 16u);
+	const bytes cm = token(CTAP_clientPIN_pinUvAuthToken_permission_cm);
+	ASSERT_EQ(cm.size(), 32u);
+	cred_mgmt(cm, CTAP_credentialManagement_subCmd_deleteCredential, credential_params(credential_id));
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_NE(decrypt_get_info_member(persistent, "encCredStoreState",
+		get_info_bytes(CTAP_authenticatorGetInfo_res_encCredStoreState)), state1);
+}
+
+TEST_F(CtapEncGetInfoTest, StoreStateChangesOnUpdateUserInformation) {
+	const bytes credential_id = make_discoverable_credential();
+	ASSERT_FALSE(credential_id.empty());
+	const bytes persistent = token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr);
+	ASSERT_EQ(persistent.size(), 32u);
+	const bytes state1 = decrypt_get_info_member(persistent, "encCredStoreState",
+		get_info_bytes(CTAP_authenticatorGetInfo_res_encCredStoreState));
+	ASSERT_EQ(state1.size(), 16u);
+	const bytes cm = token(CTAP_clientPIN_pinUvAuthToken_permission_cm);
+	ASSERT_EQ(cm.size(), 32u);
+	// 3: {"id": h'01', "name": "v"} (was "u")
+	const bytes user{0xa2, 0x62, 'i', 'd', 0x41, 0x01, 0x64, 'n', 'a', 'm', 'e', 0x61, 'v'};
+	cred_mgmt(cm, CTAP_credentialManagement_subCmd_updateUserInformation, credential_params(credential_id, user));
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_NE(decrypt_get_info_member(persistent, "encCredStoreState",
+		get_info_bytes(CTAP_authenticatorGetInfo_res_encCredStoreState)), state1);
+}
+
+TEST_F(CtapEncGetInfoTest, AbsentWithoutAes128) {
+	ASSERT_EQ(token(CTAP_clientPIN_pinUvAuthToken_permission_pcmr).size(), 32u);
+	ASSERT_EQ(get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier).size(), 32u);
+	// the same storage, a copy of the crypto table without AES-128 (ctap_state_t holds a const pointer)
+	ctap_crypto_t no_aes128 = crypto;
+	no_aes128.aes_128_cbc_encrypt = nullptr;
+	ctap_state_t other = CTAP_STATE_CONST_INIT(&no_aes128, &storage);
+	ctap_init(&other);
+	ASSERT_TRUE(other.persistent_pin_uv_auth_tokens_ready);
+	EXPECT_TRUE(get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier, &other).empty());
+	EXPECT_TRUE(get_info_bytes(CTAP_authenticatorGetInfo_res_encCredStoreState, &other).empty());
+	// this state (with AES-128) still has them
+	EXPECT_EQ(get_info_bytes(CTAP_authenticatorGetInfo_res_encIdentifier).size(), 32u);
 }
 
 } // namespace

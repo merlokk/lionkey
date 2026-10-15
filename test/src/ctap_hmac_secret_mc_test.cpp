@@ -86,16 +86,48 @@ void append_tstr(bytes &out, const std::string &text) {
 	out.insert(out.end(), text.begin(), text.end());
 }
 
-// the bytes after `key` (a CBOR text string) when a 32-byte byte string follows it
-bytes find_bstr32_after(const bytes &haystack, const std::string &key) {
+// the bytes after `key` (a CBOR text string) when a byte string of `size` (24 to 255) follows it
+bytes find_bstr_after(const bytes &haystack, const std::string &key, size_t size) {
 	bytes needle;
 	append_tstr(needle, key);
-	needle.insert(needle.end(), {0x58, 0x20});
+	needle.insert(needle.end(), {0x58, static_cast<uint8_t>(size)});
 	auto at = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end());
-	if (at == haystack.end() || haystack.end() - at < static_cast<long>(needle.size() + 32)) {
+	if (at == haystack.end() || haystack.end() - at < static_cast<long>(needle.size() + size)) {
 		return {};
 	}
-	return bytes(at + needle.size(), at + needle.size() + 32);
+	return bytes(at + static_cast<long>(needle.size()), at + static_cast<long>(needle.size() + size));
+}
+
+// the bytes after `key` (a CBOR text string) when a 32-byte byte string follows it
+bytes find_bstr32_after(const bytes &haystack, const std::string &key) {
+	return find_bstr_after(haystack, key, 32);
+}
+
+// the position of `key` (a CBOR text string) in `haystack`, -1 when absent
+long find_tstr(const bytes &haystack, const std::string &key) {
+	bytes needle;
+	append_tstr(needle, key);
+	auto at = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end());
+	return at == haystack.end() ? -1 : at - haystack.begin();
+}
+
+// the credential ID in a makeCredential response {1: fmt, 2: authData, ...}: authData (after rpIdHash,
+// flags, signCount, aaguid, length) is 02 58 <len> (under 256 bytes) or 02 59 <len 2>
+bytes credential_id_of(const bytes &mc) {
+	const bytes short_label{0x02, 0x58};
+	const bytes long_label{0x02, 0x59};
+	auto ad = std::search(mc.begin(), mc.end(), short_label.begin(), short_label.end());
+	long header = 3;
+	if (ad == mc.end()) {
+		ad = std::search(mc.begin(), mc.end(), long_label.begin(), long_label.end());
+		header = 4;
+	}
+	if (ad == mc.end() || mc.end() - ad < header + 55 + 32) {
+		ADD_FAILURE() << "no authData";
+		return {};
+	}
+	const auto auth_data = ad + header;
+	return bytes(auth_data + 55, auth_data + 55 + 32);
 }
 
 class CtapHmacSecretMcTest : public testing::Test {
@@ -167,8 +199,9 @@ protected:
 		return m;
 	}
 
-	bytes make_credential(const bytes &extensions) {
-		bytes r{0xa5, 0x01, 0x58, 0x20};
+	// clientDataHash 32 x 0x11; `token` not empty: pinUvAuthParam (protocol one) with it
+	bytes make_credential(const bytes &extensions, const bytes &token = {}) {
+		bytes r{static_cast<uint8_t>(token.empty() ? 0xa5 : 0xa7), 0x01, 0x58, 0x20};
 		r.insert(r.end(), 32, 0x11);
 		r.insert(r.end(), {0x02, 0xa1, 0x62, 'i', 'd', 0x63, 'a', '.', 'b'});
 		r.insert(r.end(), {0x03, 0xa1, 0x62, 'i', 'd', 0x41, 0x01});
@@ -176,8 +209,76 @@ protected:
 			0x6a, 'p', 'u', 'b', 'l', 'i', 'c', '-', 'k', 'e', 'y'});
 		r.push_back(0x06);
 		r.insert(r.end(), extensions.begin(), extensions.end());
+		if (!token.empty()) {
+			const bytes mac = hmac_sha256(token, bytes(32, 0x11));
+			r.push_back(0x08);
+			append_bstr(r, bytes(mac.begin(), mac.begin() + 16));
+			r.insert(r.end(), {0x09, 0x01});
+		}
 		request(CTAP_CMD_MAKE_CREDENTIAL, r);
 		return response_bytes();
+	}
+
+	// {"hmac-secret": true, "hmac-secret-mc": `input`}
+	static bytes hmac_secret_mc_extensions(const bytes &input) {
+		bytes ext{0xa2};
+		append_tstr(ext, "hmac-secret");
+		ext.push_back(0xf5);
+		append_tstr(ext, "hmac-secret-mc");
+		ext.insert(ext.end(), input.begin(), input.end());
+		return ext;
+	}
+
+	// getAssertion for "a.b" (clientDataHash 32 x 0x22) with {"hmac-secret": `input`};
+	// `token` not empty: pinUvAuthParam (protocol one) with it
+	bytes get_assertion(const bytes &credential_id, const bytes &input, const bytes &token = {}) {
+		bytes ga{static_cast<uint8_t>(token.empty() ? 0xa4 : 0xa6), 0x01, 0x63, 'a', '.', 'b', 0x02, 0x58, 0x20};
+		ga.insert(ga.end(), 32, 0x22);
+		ga.insert(ga.end(), {0x03, 0x81, 0xa2, 0x62, 'i', 'd', 0x58, 0x20});
+		ga.insert(ga.end(), credential_id.begin(), credential_id.end());
+		ga.insert(ga.end(), {0x64, 't', 'y', 'p', 'e', 0x6a, 'p', 'u', 'b', 'l', 'i', 'c', '-', 'k', 'e', 'y'});
+		ga.insert(ga.end(), {0x04, 0xa1});
+		append_tstr(ga, "hmac-secret");
+		ga.insert(ga.end(), input.begin(), input.end());
+		if (!token.empty()) {
+			const bytes mac = hmac_sha256(token, bytes(32, 0x22));
+			ga.push_back(0x06);
+			append_bstr(ga, bytes(mac.begin(), mac.begin() + 16));
+			ga.insert(ga.end(), {0x07, 0x01});
+		}
+		request(CTAP_CMD_GET_ASSERTION, ga);
+		return response_bytes();
+	}
+
+	// a PIN, set directly: CurrentStoredPIN = LEFT(SHA-256(PIN), 16)
+	void set_pin(const std::string &pin) {
+		const bytes hash = sha256(reinterpret_cast<const uint8_t *>(pin.data()), pin.size());
+		std::copy(hash.begin(), hash.begin() + 16, ctap.pin_state.pin_hash);
+		ctap.pin_state.pin_code_point_length = static_cast<uint8_t>(pin.size());
+		ctap.pin_state.is_pin_set = 1u;
+		ctap_update_pin_persistent_state(&ctap);
+	}
+
+	// clientPIN getPinUvAuthTokenUsingPinWithPermissions (protocol one, rpId "a.b"): the decrypted token
+	bytes pin_token(const std::string &pin, uint8_t permissions) {
+		agree();
+		const bytes pin_hash = sha256(reinterpret_cast<const uint8_t *>(pin.data()), pin.size());
+		const bytes pin_hash_enc = aes_cbc(shared_secret, bytes(pin_hash.begin(), pin_hash.begin() + 16), true);
+		bytes r{0xa6, 0x01, 0x01, 0x02, 0x09, 0x03, 0xa5, 0x01, 0x02, 0x03, 0x38, 0x18, 0x20, 0x01, 0x21, 0x58, 0x20};
+		r.insert(r.end(), platform_public_x.begin(), platform_public_x.end());
+		r.insert(r.end(), {0x22, 0x58, 0x20});
+		r.insert(r.end(), platform_public_y.begin(), platform_public_y.end());
+		r.push_back(0x06);
+		append_bstr(r, pin_hash_enc);
+		r.insert(r.end(), {0x09, permissions}); // < 24
+		r.insert(r.end(), {0x0a, 0x63, 'a', '.', 'b'});
+		request(CTAP_CMD_CLIENT_PIN, r);
+		if (status != CTAP2_OK || response.length != 4u + 32u) {
+			ADD_FAILURE() << "no pinUvAuthToken: status " << static_cast<int>(status);
+			return {};
+		}
+		// {2: h'<32>'}: a1 02 58 20
+		return aes_cbc(shared_secret, bytes(response.data + 4, response.data + 4 + 32), false);
 	}
 };
 
@@ -268,6 +369,113 @@ TEST_F(CtapHmacSecretMcTest, TheSameOutputAsGetAssertion) {
 	request(CTAP_CMD_GET_ASSERTION, ga);
 	ASSERT_EQ(status, CTAP2_OK);
 	EXPECT_NE(aes_cbc(shared_secret, find_bstr32_after(response_bytes(), "hmac-secret"), false), mc_output);
+}
+
+TEST_F(CtapHmacSecretMcTest, HmacSecretFalseIsNotEnough) {
+	agree();
+	bytes ext{0xa2};
+	append_tstr(ext, "hmac-secret");
+	ext.push_back(0xf4);
+	append_tstr(ext, "hmac-secret-mc");
+	const bytes input = hmac_secret_input(bytes(32, 0x5a));
+	ext.insert(ext.end(), input.begin(), input.end());
+	make_credential(ext);
+	EXPECT_EQ(status, CTAP2_ERR_MISSING_PARAMETER);
+}
+
+TEST_F(CtapHmacSecretMcTest, TwoSalts) {
+	agree();
+	bytes salts(32, 0x5a);
+	salts.insert(salts.end(), 32, 0xa5);
+	const bytes input = hmac_secret_input(salts);
+	const bytes mc = make_credential(hmac_secret_mc_extensions(input));
+	ASSERT_EQ(status, CTAP2_OK);
+	const bytes mc_output_enc = find_bstr_after(mc, "hmac-secret-mc", 64);
+	ASSERT_EQ(mc_output_enc.size(), 64u);
+	const bytes mc_output = aes_cbc(shared_secret, mc_output_enc, false);
+	EXPECT_NE(bytes(mc_output.begin(), mc_output.begin() + 32), bytes(mc_output.begin() + 32, mc_output.end()));
+	const bytes credential_id = credential_id_of(mc);
+	ASSERT_EQ(credential_id.size(), 32u);
+
+	// getAssertion with the same two salts: the same two outputs
+	const bytes ga_output_enc = find_bstr_after(get_assertion(credential_id, input), "hmac-secret", 64);
+	ASSERT_EQ(status, CTAP2_OK);
+	ASSERT_EQ(ga_output_enc.size(), 64u);
+	EXPECT_EQ(aes_cbc(shared_secret, ga_output_enc, false), mc_output);
+	// and each one alone
+	for (size_t i = 0; i < 2; ++i) {
+		const bytes salt(salts.begin() + static_cast<long>(32 * i), salts.begin() + static_cast<long>(32 * (i + 1)));
+		const bytes one = find_bstr32_after(get_assertion(credential_id, hmac_secret_input(salt)), "hmac-secret");
+		ASSERT_EQ(status, CTAP2_OK);
+		ASSERT_EQ(one.size(), 32u);
+		EXPECT_EQ(
+			aes_cbc(shared_secret, one, false),
+			bytes(mc_output.begin() + static_cast<long>(32 * i), mc_output.begin() + static_cast<long>(32 * (i + 1)))
+		);
+	}
+}
+
+TEST_F(CtapHmacSecretMcTest, WithUv) {
+	const std::string pin = "4826";
+	set_pin(pin);
+	const bytes mc_token = pin_token(pin, CTAP_clientPIN_pinUvAuthToken_permission_mc);
+	ASSERT_EQ(mc_token.size(), 32u);
+	const bytes input = hmac_secret_input(bytes(32, 0x5a));
+	const bytes mc = make_credential(hmac_secret_mc_extensions(input), mc_token);
+	ASSERT_EQ(status, CTAP2_OK);
+	const bytes credential_id = credential_id_of(mc);
+	ASSERT_EQ(credential_id.size(), 32u);
+	const bytes mc_output_enc = find_bstr32_after(mc, "hmac-secret-mc");
+	ASSERT_EQ(mc_output_enc.size(), 32u);
+	const bytes mc_output = aes_cbc(shared_secret, mc_output_enc, false);
+
+	// getAssertion with UV: the same output (CredRandomWithUV)
+	const bytes ga_token = pin_token(pin, CTAP_clientPIN_pinUvAuthToken_permission_ga);
+	ASSERT_EQ(ga_token.size(), 32u);
+	const bytes ga_uv = get_assertion(credential_id, input, ga_token);
+	ASSERT_EQ(status, CTAP2_OK);
+	const bytes ga_uv_output_enc = find_bstr32_after(ga_uv, "hmac-secret");
+	ASSERT_EQ(ga_uv_output_enc.size(), 32u);
+	EXPECT_EQ(aes_cbc(shared_secret, ga_uv_output_enc, false), mc_output);
+
+	// without UV: another one (CredRandomWithoutUV)
+	const bytes ga = get_assertion(credential_id, input);
+	ASSERT_EQ(status, CTAP2_OK);
+	const bytes ga_output_enc = find_bstr32_after(ga, "hmac-secret");
+	ASSERT_EQ(ga_output_enc.size(), 32u);
+	EXPECT_NE(aes_cbc(shared_secret, ga_output_enc, false), mc_output);
+}
+
+TEST_F(CtapHmacSecretMcTest, CanonicalOrderWithMinPinLength) {
+	// authenticatorConfig setMinPINLength {1: 3, 2: {2: ["a.b"]}} (no PIN: no pinUvAuthParam)
+	request(CTAP_CMD_CONFIG, {0xa2, 0x01, CTAP_authenticatorConfig_subCmd_setMinPINLength,
+		0x02, 0xa1, 0x02, 0x81, 0x63, 'a', '.', 'b'});
+	ASSERT_EQ(status, CTAP2_OK);
+	agree();
+	const bytes input = hmac_secret_input(bytes(32, 0x5a));
+	bytes ext{0xa3};
+	append_tstr(ext, "hmac-secret");
+	ext.push_back(0xf5);
+	append_tstr(ext, "minPinLength");
+	ext.push_back(0xf5);
+	append_tstr(ext, "hmac-secret-mc");
+	ext.insert(ext.end(), input.begin(), input.end());
+	const bytes mc = make_credential(ext);
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_TRUE(test_validate_cbor(response.data, response.length));
+	// the extensions map: {"hmac-secret": true, "minPinLength": n, "hmac-secret-mc": h'<32>'}
+	// (CTAP2 canonical CBOR: shorter keys first)
+	const long hmac_secret = find_tstr(mc, "hmac-secret");
+	const long min_pin_length = find_tstr(mc, "minPinLength");
+	const long hmac_secret_mc = find_tstr(mc, "hmac-secret-mc");
+	ASSERT_GT(hmac_secret, 0);
+	ASSERT_GT(min_pin_length, 0);
+	ASSERT_GT(hmac_secret_mc, 0);
+	EXPECT_EQ(mc[static_cast<size_t>(hmac_secret) - 1], 0xa3); // the map header
+	EXPECT_EQ(mc[static_cast<size_t>(hmac_secret) + 12], 0xf5);
+	EXPECT_EQ(min_pin_length, hmac_secret + 12 + 1);
+	EXPECT_EQ(hmac_secret_mc, min_pin_length + 13 + 1); // minPinLength (< 24): one byte
+	EXPECT_EQ(find_bstr32_after(mc, "hmac-secret-mc").size(), 32u);
 }
 
 } // namespace

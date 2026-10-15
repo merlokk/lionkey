@@ -324,4 +324,269 @@ TEST_F(Ctap1Test, ResetMakesANewAttestation) {
 	EXPECT_EQ(sw, CTAP1_SW_WRONG_DATA);
 }
 
+class Ctap1Ctap2CredentialTest : public Ctap1Test {
+protected:
+	// makeCredential for rp "a.b" with these pubKeyCredParams (CBOR array) and extra members
+	// (keys > 4, CBOR-encoded, `extra_members` of them): the key handle of the stored credential
+	bytes make_credential(const bytes &cred_params, const bytes &extra, uint8_t extra_members) {
+		bytes mc{static_cast<uint8_t>(0xa4 + extra_members), 0x01, 0x58, 0x20};
+		mc.insert(mc.end(), 32, 0x11);
+		mc.insert(mc.end(), {0x02, 0xa1, 0x62, 'i', 'd', 0x63, 'a', '.', 'b'});
+		mc.insert(mc.end(), {0x03, 0xa1, 0x62, 'i', 'd', 0x41, 0x01});
+		mc.push_back(0x04);
+		mc.insert(mc.end(), cred_params.begin(), cred_params.end());
+		mc.insert(mc.end(), extra.begin(), extra.end());
+		status = ctap_request(&ctap, CTAP_CMD_MAKE_CREDENTIAL, mc.size(), mc.data(), &response);
+		EXPECT_EQ(status, CTAP2_OK);
+		ctap_storage_item_t item{.key = CTAP_STORAGE_KEY_CREDENTIAL};
+		if (storage.find_item(&storage, &item) != CTAP_STORAGE_OK) {
+			ADD_FAILURE() << "no stored credential";
+			return {};
+		}
+		return {item.data + 4, item.data + 4 + 32}; // ctap_credential_source_t: flags, id
+	}
+
+	static bytes cred_params(uint8_t alg) {
+		return {0x81, 0xa2, 0x63, 'a', 'l', 'g', alg, 0x64, 't', 'y', 'p', 'e',
+			0x6a, 'p', 'u', 'b', 'l', 'i', 'c', '-', 'k', 'e', 'y'};
+	}
+};
+
+TEST_F(Ctap1Ctap2CredentialTest, EdDsaCredentialIsWrongData) {
+	// U2F is ES256 only
+	const bytes key_handle = make_credential(cred_params(0x27), {}, 0); // -8
+	ASSERT_EQ(key_handle.size(), 32u);
+	apdu(extended(CTAP1_INS_AUTHENTICATE, CTAP1_AUTH_CHECK_ONLY,
+		authenticate_payload(sha256(std::string("a.b")), key_handle)));
+	EXPECT_EQ(sw, CTAP1_SW_WRONG_DATA);
+	apdu(extended(CTAP1_INS_AUTHENTICATE, CTAP1_AUTH_DONT_ENFORCE_USER_PRESENCE,
+		authenticate_payload(sha256(std::string("a.b")), key_handle)));
+	EXPECT_EQ(sw, CTAP1_SW_WRONG_DATA);
+}
+
+TEST_F(Ctap1Ctap2CredentialTest, CredProtect3IsWrongData) {
+	// U2F has no user verification: {6: {"credProtect": 3}}
+	const bytes ext{0x06, 0xa1, 0x6b, 'c', 'r', 'e', 'd', 'P', 'r', 'o', 't', 'e', 'c', 't', 0x03};
+	const bytes key_handle = make_credential(cred_params(0x26), ext, 1);
+	ASSERT_EQ(key_handle.size(), 32u);
+	apdu(extended(CTAP1_INS_AUTHENTICATE, CTAP1_AUTH_CHECK_ONLY,
+		authenticate_payload(sha256(std::string("a.b")), key_handle)));
+	EXPECT_EQ(sw, CTAP1_SW_WRONG_DATA);
+	apdu(extended(CTAP1_INS_AUTHENTICATE, CTAP1_AUTH_DONT_ENFORCE_USER_PRESENCE,
+		authenticate_payload(sha256(std::string("a.b")), key_handle)));
+	EXPECT_EQ(sw, CTAP1_SW_WRONG_DATA);
+}
+
+TEST_F(Ctap1Ctap2CredentialTest, CredProtect2Works) {
+	// {6: {"credProtect": 2}}: the key handle is given, so U2F may use it
+	const bytes ext{0x06, 0xa1, 0x6b, 'c', 'r', 'e', 'd', 'P', 'r', 'o', 't', 'e', 'c', 't', 0x02};
+	const bytes key_handle = make_credential(cred_params(0x26), ext, 1);
+	ASSERT_EQ(key_handle.size(), 32u);
+	apdu(extended(CTAP1_INS_AUTHENTICATE, CTAP1_AUTH_DONT_ENFORCE_USER_PRESENCE,
+		authenticate_payload(sha256(std::string("a.b")), key_handle)));
+	EXPECT_EQ(sw, CTAP1_SW_NO_ERROR);
+}
+
+TEST_F(Ctap1Test, ShortApdu) {
+	// 00 01 00 00 Lc=0x40 <64 bytes> [Le]
+	bytes payload = challenge;
+	payload.insert(payload.end(), application.begin(), application.end());
+	bytes request{0x00, CTAP1_INS_REGISTER, 0x00, 0x00, 0x40};
+	request.insert(request.end(), payload.begin(), payload.end());
+	apdu(request);
+	ASSERT_EQ(sw, CTAP1_SW_NO_ERROR);
+	EXPECT_EQ(data[0], 0x05);
+	EXPECT_EQ(data[66], 32u);
+	const bytes key_handle(data.begin() + 67, data.begin() + 67 + 32);
+	request.push_back(0x00); // Le
+	apdu(request);
+	EXPECT_EQ(sw, CTAP1_SW_NO_ERROR);
+
+	// U2F_AUTHENTICATE: Lc = 0x61 (32 + 32 + 1 + 32), with and without Le
+	const bytes auth = authenticate_payload(application, key_handle);
+	ASSERT_EQ(auth.size(), 0x61u);
+	bytes auth_request{0x00, CTAP1_INS_AUTHENTICATE, CTAP1_AUTH_DONT_ENFORCE_USER_PRESENCE, 0x00, 0x61};
+	auth_request.insert(auth_request.end(), auth.begin(), auth.end());
+	apdu(auth_request);
+	EXPECT_EQ(sw, CTAP1_SW_NO_ERROR);
+	auth_request.push_back(0x00);
+	apdu(auth_request);
+	EXPECT_EQ(sw, CTAP1_SW_NO_ERROR);
+
+	// malformed: Lc 0x40 with 63 or 66 bytes, Lc 0x41 with 64 bytes
+	bytes short_data{0x00, CTAP1_INS_REGISTER, 0x00, 0x00, 0x40};
+	short_data.insert(short_data.end(), payload.begin(), payload.end() - 1);
+	apdu(short_data);
+	EXPECT_EQ(sw, CTAP1_SW_WRONG_LENGTH);
+	bytes long_data{0x00, CTAP1_INS_REGISTER, 0x00, 0x00, 0x40};
+	long_data.insert(long_data.end(), payload.begin(), payload.end());
+	long_data.insert(long_data.end(), {0x00, 0x00});
+	apdu(long_data);
+	EXPECT_EQ(sw, CTAP1_SW_WRONG_LENGTH);
+	bytes wrong_lc{0x00, CTAP1_INS_REGISTER, 0x00, 0x00, 0x41};
+	wrong_lc.insert(wrong_lc.end(), payload.begin(), payload.end());
+	apdu(wrong_lc);
+	EXPECT_EQ(sw, CTAP1_SW_WRONG_LENGTH);
+}
+
+TEST_F(Ctap1Test, UserPresenceCancel) {
+	test_up_result = CTAP_UP_RESULT_CANCEL;
+	bytes payload = challenge;
+	payload.insert(payload.end(), application.begin(), application.end());
+	apdu(extended(CTAP1_INS_REGISTER, 0x00, payload));
+	EXPECT_EQ(sw, CTAP1_SW_CONDITIONS_NOT_SATISFIED);
+	EXPECT_EQ(test_up_calls, 1u);
+	// nothing stored
+	ctap_storage_item_t item{.key = CTAP_STORAGE_KEY_CREDENTIAL};
+	EXPECT_NE(storage.find_item(&storage, &item), CTAP_STORAGE_OK);
+
+	test_up_result = CTAP_UP_RESULT_ALLOW;
+	Registered r = do_register(application);
+	test_up_result = CTAP_UP_RESULT_CANCEL;
+	test_up_calls = 0;
+	apdu(extended(CTAP1_INS_AUTHENTICATE, CTAP1_AUTH_ENFORCE_USER_PRESENCE, authenticate_payload(application, r.key_handle)));
+	EXPECT_EQ(sw, CTAP1_SW_CONDITIONS_NOT_SATISFIED);
+	EXPECT_EQ(test_up_calls, 1u);
+	test_up_result = CTAP_UP_RESULT_DENY;
+	apdu(extended(CTAP1_INS_AUTHENTICATE, CTAP1_AUTH_ENFORCE_USER_PRESENCE, authenticate_payload(application, r.key_handle)));
+	EXPECT_EQ(sw, CTAP1_SW_CONDITIONS_NOT_SATISFIED);
+}
+
+// the members of a DER SEQUENCE's content (each a whole element)
+std::vector<bytes> der_sequence_members(const bytes &sequence) {
+	std::vector<bytes> members;
+	const size_t header = sequence[1] < 0x80 ? 2 : (sequence[1] == 0x81 ? 3 : 4);
+	size_t pos = header;
+	while (pos < sequence.size()) {
+		const size_t size = der_element_size(&sequence[pos]);
+		if (pos + size > sequence.size()) {
+			ADD_FAILURE() << "malformed DER";
+			return {};
+		}
+		members.emplace_back(sequence.begin() + pos, sequence.begin() + pos + size);
+		pos += size;
+	}
+	return members;
+}
+
+TEST_F(Ctap1Test, AttestationCertificateFields) {
+	Registered r = do_register(application);
+	ASSERT_FALSE(r.cert.empty());
+	ASSERT_EQ(r.cert[0], 0x30);
+	EXPECT_EQ(der_element_size(r.cert.data()), r.cert.size());
+	const std::vector<bytes> cert = der_sequence_members(r.cert);
+	ASSERT_EQ(cert.size(), 3u); // tbsCertificate, signatureAlgorithm, signatureValue
+	const std::vector<bytes> tbs = der_sequence_members(cert[0]);
+	// version, serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo
+	ASSERT_EQ(tbs.size(), 7u);
+	EXPECT_EQ(tbs[0], (bytes{0xa0, 0x03, 0x02, 0x01, 0x02})); // v3
+
+	// serial: a positive, minimally encoded, non-zero INTEGER
+	const bytes &serial = tbs[1];
+	ASSERT_EQ(serial[0], 0x02);
+	ASSERT_GE(serial.size(), 3u);
+	EXPECT_EQ(serial[2] & 0x80, 0);
+	EXPECT_NE(serial[2], 0x00);
+	EXPECT_TRUE(std::any_of(serial.begin() + 2, serial.end(), [](uint8_t b) { return b != 0; }));
+
+	const bytes ecdsa_with_sha256{0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02};
+	EXPECT_EQ(tbs[2], ecdsa_with_sha256);
+	EXPECT_EQ(cert[1], ecdsa_with_sha256);
+
+	// CN=LionKey U2F (UTF8String)
+	const std::string cn = "LionKey U2F";
+	bytes name{0x30, 0x16, 0x31, 0x14, 0x30, 0x12, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, static_cast<uint8_t>(cn.size())};
+	name.insert(name.end(), cn.begin(), cn.end());
+	EXPECT_EQ(tbs[3], name); // issuer
+	EXPECT_EQ(tbs[5], name); // subject
+
+	// 2026-01-01 00:00:00Z .. 2049-12-31 23:59:59Z (UTCTime: YY < 50 is 20YY)
+	const std::string not_before = "260101000000Z";
+	const std::string not_after = "491231235959Z";
+	bytes validity{0x30, 0x1e, 0x17, 0x0d};
+	validity.insert(validity.end(), not_before.begin(), not_before.end());
+	validity.insert(validity.end(), {0x17, 0x0d});
+	validity.insert(validity.end(), not_after.begin(), not_after.end());
+	EXPECT_EQ(tbs[4], validity);
+
+	bytes spki = spki_prefix;
+	spki.insert(spki.end(), tbs[6].end() - 64, tbs[6].end());
+	EXPECT_EQ(tbs[6], spki);
+
+	// a reset: a new key and a new serial
+	status = ctap_request(&ctap, CTAP_CMD_RESET, 0, nullptr, &response);
+	ASSERT_EQ(status, CTAP2_OK);
+	Registered r2 = do_register(application);
+	const std::vector<bytes> cert2 = der_sequence_members(r2.cert);
+	ASSERT_EQ(cert2.size(), 3u);
+	const std::vector<bytes> tbs2 = der_sequence_members(cert2[0]);
+	ASSERT_EQ(tbs2.size(), 7u);
+	EXPECT_NE(tbs2[1], serial);
+	EXPECT_NE(tbs2[6], tbs[6]);
+	EXPECT_EQ(tbs2[3], name);
+	EXPECT_EQ(tbs2[4], validity);
+}
+
+TEST_F(Ctap1Test, RegisteredCredentialIsU2fAndNotDiscoverable) {
+	Registered r = do_register(application);
+	ctap_storage_item_t item{.key = CTAP_STORAGE_KEY_CREDENTIAL};
+	ASSERT_EQ(storage.find_item(&storage, &item), CTAP_STORAGE_OK);
+	ASSERT_GE(item.size, sizeof(ctap_credential_source_t));
+	const ctap_credential_handle_t credential{
+		.source = reinterpret_cast<const ctap_credential_source_t *>(item.data),
+		.item_handle = item.handle,
+	};
+	EXPECT_EQ(bytes(credential.source->id, credential.source->id + 32), r.key_handle);
+	EXPECT_NE(ctap_credential_get_flags(&credential) & CTAP_CREDENTIAL_SOURCE_CTAP_flags_u2f, 0u);
+	EXPECT_FALSE(ctap_credential_is_discoverable(&credential));
+	EXPECT_EQ(ctap_credential_get_alg(&credential), COSE_ALG_ES256);
+	EXPECT_EQ(ctap_credential_get_cred_protect(&credential), CTAP_extension_credProtect_1_userVerificationOptional);
+	EXPECT_EQ(bytes(credential.source->rp_id_hash, credential.source->rp_id_hash + 32), application);
+	ctap_string_t rp_id;
+	ctap_credential_get_rp_id(&credential, &rp_id);
+	EXPECT_EQ(rp_id.size, 0u);
+	EXPECT_EQ(ctap_count_num_stored_credentials(&storage, false), 1u);
+	EXPECT_EQ(ctap_count_num_stored_discoverable_credentials(&storage), 0u);
+}
+
+// a storage that can refuse writes (the memory storage otherwise)
+bool fail_storage_writes = false;
+
+ctap_storage_status_t failing_create_or_update_item(const ctap_storage_t *storage, ctap_storage_item_t *item) {
+	if (fail_storage_writes) {
+		return CTAP_STORAGE_ERROR;
+	}
+	return ctap_memory_storage_create_or_update_item(storage, item);
+}
+
+TEST_F(Ctap1Test, StorageWriteFailure) {
+	ctap_storage_t failing_storage = storage;
+	failing_storage.create_or_update_item = failing_create_or_update_item;
+	ctap_state_t failing_ctap = CTAP_STATE_CONST_INIT(&crypto, &failing_storage);
+	fail_storage_writes = false;
+	ctap_init(&failing_ctap);
+	bytes payload = challenge;
+	payload.insert(payload.end(), application.begin(), application.end());
+	const bytes request = extended(CTAP1_INS_REGISTER, 0x00, payload);
+	const auto send = [&]() {
+		const size_t n = ctap1_request(&failing_ctap, request.data(), request.size(), u2f_response, sizeof(u2f_response));
+		EXPECT_GE(n, 2u);
+		return n >= 2 ? static_cast<uint16_t>((u2f_response[n - 2] << 8) | u2f_response[n - 1]) : 0;
+	};
+
+	// the attestation cannot be stored
+	fail_storage_writes = true;
+	EXPECT_EQ(send(), CTAP1_SW_COMMAND_NOT_ALLOWED);
+	ctap_storage_item_t item{.key = CTAP_STORAGE_KEY_U2F_ATTESTATION};
+	EXPECT_NE(storage.find_item(&storage, &item), CTAP_STORAGE_OK);
+
+	// the attestation is there, the credential cannot be stored
+	fail_storage_writes = false;
+	EXPECT_EQ(send(), CTAP1_SW_NO_ERROR);
+	fail_storage_writes = true;
+	EXPECT_EQ(send(), CTAP1_SW_COMMAND_NOT_ALLOWED);
+	fail_storage_writes = false;
+	EXPECT_EQ(ctap_count_num_stored_credentials(&storage, false), 1u);
+}
+
 } // namespace

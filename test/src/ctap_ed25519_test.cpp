@@ -7,7 +7,9 @@ extern "C" {
 #include <ctap_crypto_software.h>
 #include <ctap_memory_storage.h>
 #include <ctap_test.h>
+#include <hmac.h>
 #include <monocypher-ed25519.h>
+#include <sha256.h>
 }
 namespace {
 
@@ -255,6 +257,127 @@ TEST_F(CtapEd25519CredentialTest, TheHostsOrderDecides) {
 TEST_F(CtapEd25519CredentialTest, UnsupportedAlgorithm) {
 	make_credential({-257});
 	EXPECT_EQ(status, CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+}
+
+// {"alg": <alg>, "type": "public-key"}
+std::vector<uint8_t> pub_key_cred_param(uint8_t alg) {
+	return {0xa2, 0x63, 'a', 'l', 'g', alg, 0x64, 't', 'y', 'p', 'e',
+		0x6a, 'p', 'u', 'b', 'l', 'i', 'c', '-', 'k', 'e', 'y'};
+}
+
+TEST_F(CtapEd25519CredentialTest, GetInfoAlgorithmsInOrder) {
+	request(CTAP_CMD_GET_INFO, {});
+	ASSERT_EQ(status, CTAP2_OK);
+	// [-7, -8, -19]
+	std::vector<uint8_t> expected{0x83};
+	for (uint8_t alg : {0x26, 0x27, 0x32}) {
+		const auto param = pub_key_cred_param(alg);
+		expected.insert(expected.end(), param.begin(), param.end());
+	}
+	EXPECT_EQ(member(CTAP_authenticatorGetInfo_res_algorithms), expected);
+}
+
+TEST_F(CtapEd25519CredentialTest, WithoutEd25519InTheCryptoTable) {
+	// a crypto table without Ed25519 (e.g. upstream's stm32 one): EdDSA is not offered
+	ctap_crypto_t no_eddsa = crypto;
+	no_eddsa.ed25519_compute_public_key = nullptr;
+	no_eddsa.ed25519_sign = nullptr;
+	ctap_state_t no_eddsa_ctap = CTAP_STATE_CONST_INIT(&no_eddsa, &storage);
+	ctap_init(&no_eddsa_ctap);
+
+	status = ctap_request(&no_eddsa_ctap, CTAP_CMD_GET_INFO, 0, nullptr, &response);
+	ASSERT_EQ(status, CTAP2_OK);
+	std::vector<uint8_t> expected{0x81};
+	const auto param = pub_key_cred_param(0x26);
+	expected.insert(expected.end(), param.begin(), param.end());
+	EXPECT_EQ(member(CTAP_authenticatorGetInfo_res_algorithms), expected);
+
+	for (uint8_t alg : {0x27, 0x32}) {
+		std::vector<uint8_t> r = {0xa4, 0x01, 0x58, 0x20};
+		r.insert(r.end(), 32, 0x11);
+		r.insert(r.end(), {0x02, 0xa1, 0x62, 'i', 'd', 0x63, 'a', '.', 'b'});
+		r.insert(r.end(), {0x03, 0xa1, 0x62, 'i', 'd', 0x41, 0x01});
+		r.insert(r.end(), {0x04, 0x81});
+		const auto p = pub_key_cred_param(alg);
+		r.insert(r.end(), p.begin(), p.end());
+		status = ctap_request(&no_eddsa_ctap, CTAP_CMD_MAKE_CREDENTIAL, r.size(), r.data(), &response);
+		EXPECT_EQ(status, CTAP2_ERR_UNSUPPORTED_ALGORITHM) << "alg byte " << int(alg);
+	}
+
+	// the full table still offers EdDSA
+	make_credential({-8});
+	EXPECT_EQ(status, CTAP2_OK);
+}
+
+TEST_F(CtapEd25519CredentialTest, Ed25519FirstThenEdDsa) {
+	make_credential({-19, -8});
+	ASSERT_EQ(status, CTAP2_OK);
+	Made m = made();
+	ASSERT_EQ(m.cose_key.size(), okp_ed25519_prefix.size() + 32);
+	EXPECT_TRUE(std::equal(okp_ed25519_prefix.begin(), okp_ed25519_prefix.end(), m.cose_key.begin()));
+	// packed self attestation: {"alg": -19, "sig": h'<64>'}
+	auto att_stmt = member(3);
+	ASSERT_EQ(att_stmt.size(), 1 + 4 + 1 + 4 + 2 + 64u);
+	EXPECT_EQ(att_stmt[5], 0x32);
+	std::vector<uint8_t> public_key(m.cose_key.end() - 32, m.cose_key.end());
+	EXPECT_TRUE(verify(public_key, std::vector<uint8_t>(att_stmt.end() - 64, att_stmt.end()), m.auth_data, 0x11));
+}
+
+std::vector<uint8_t> hmac_sha256(const std::vector<uint8_t> &key, const std::vector<uint8_t> &data) {
+	const hash_alg_t *const alg = &hash_alg_sha256;
+	std::vector<uint8_t> hash_ctx(alg->ctx_size);
+	std::vector<uint8_t> ctx(hmac_get_context_size(alg));
+	std::vector<uint8_t> out(32);
+	hmac_init(ctx.data(), alg, hash_ctx.data(), key.data(), key.size());
+	hmac_update(ctx.data(), data.data(), data.size());
+	hmac_final(ctx.data(), out.data());
+	return out;
+}
+
+TEST_F(CtapEd25519CredentialTest, CredentialManagementListsTheOkpKey) {
+	for (int alg : {-8, -19}) {
+		SCOPED_TRACE(alg);
+		request(CTAP_CMD_RESET, {});
+		ASSERT_EQ(status, CTAP2_OK);
+		// a discoverable credential: {..., 7: {"rk": true}}
+		std::vector<uint8_t> r = {0xa5, 0x01, 0x58, 0x20};
+		r.insert(r.end(), 32, 0x11);
+		r.insert(r.end(), {0x02, 0xa1, 0x62, 'i', 'd', 0x63, 'a', '.', 'b'});
+		r.insert(r.end(), {0x03, 0xa1, 0x62, 'i', 'd', 0x41, 0x01});
+		r.insert(r.end(), {0x04, 0x81});
+		const auto p = pub_key_cred_param(static_cast<uint8_t>(0x20 + (-1 - alg)));
+		r.insert(r.end(), p.begin(), p.end());
+		r.insert(r.end(), {0x07, 0xa1, 0x62, 'r', 'k', 0xf5});
+		request(CTAP_CMD_MAKE_CREDENTIAL, r);
+		ASSERT_EQ(status, CTAP2_OK);
+		const Made m = made();
+
+		// a pinUvAuthToken (protocol one) with the cm permission, set directly
+		ctap_pin_uv_auth_token_begin_using(&ctap, false, CTAP_clientPIN_pinUvAuthToken_permission_cm);
+		const std::vector<uint8_t> token(
+			ctap.pin_protocols[0].pin_uv_auth_token,
+			ctap.pin_protocols[0].pin_uv_auth_token + CTAP_PIN_UV_AUTH_TOKEN_SIZE
+		);
+		// enumerateCredentialsBegin {1: 4, 2: {1: SHA-256("a.b")}, 3: 1, 4: LEFT(HMAC(token, 4 || params), 16)}
+		std::vector<uint8_t> params{0xa1, 0x01, 0x58, 0x20};
+		params.insert(params.end(), m.auth_data.begin(), m.auth_data.begin() + 32); // rpIdHash
+		std::vector<uint8_t> message{CTAP_credentialManagement_subCmd_enumerateCredentialsBegin};
+		message.insert(message.end(), params.begin(), params.end());
+		const auto mac = hmac_sha256(token, message);
+		std::vector<uint8_t> cm{0xa4, 0x01, CTAP_credentialManagement_subCmd_enumerateCredentialsBegin, 0x02};
+		cm.insert(cm.end(), params.begin(), params.end());
+		cm.insert(cm.end(), {0x03, 0x01, 0x04, 0x50});
+		cm.insert(cm.end(), mac.begin(), mac.begin() + 16);
+		request(CTAP_CMD_CREDENTIAL_MANAGEMENT, cm);
+		ASSERT_EQ(status, CTAP2_OK);
+		EXPECT_TRUE(test_validate_cbor(response.data, response.length));
+		// publicKey: the same OKP COSE key as in makeCredential
+		const auto &prefix = alg == -8 ? okp_eddsa_prefix : okp_ed25519_prefix;
+		const auto public_key = member(CTAP_credentialManagement_res_publicKey);
+		ASSERT_EQ(public_key.size(), prefix.size() + 32);
+		EXPECT_TRUE(std::equal(prefix.begin(), prefix.end(), public_key.begin()));
+		EXPECT_EQ(public_key, m.cose_key);
+	}
 }
 
 } // namespace

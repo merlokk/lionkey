@@ -277,6 +277,46 @@ constexpr auto create_get_pin_token_v2(
 	return params;
 }
 
+constexpr auto create_get_pin_uv_auth_token_using_pin_with_permissions_v1(
+	const std::array<uint8_t, 32> &x,
+	const std::array<uint8_t, 32> &y,
+	const std::array<uint8_t, 16> &pin_hash_enc
+) {
+	auto params = hex::bytes<
+		// {
+		//     1: 1,
+		//     2: 9,
+		//     3: {
+		//         1: 2,
+		//         3: -25_0,
+		//         -1: 1,
+		//         -2: h'{x}',
+		//         -3: h'{y}',
+		//     },
+		//     6: h'{pinHashEnc (0x06) (16 bytes)}',
+		//     9: 4,
+		// }
+		"a5"
+		"  01 01" // pinUvAuthProtocol = 1
+		"  02 09"
+		"  03 a5"
+		"       01 02"
+		"       03 3818"
+		"       20 01"
+		"       21 5820" // x (32 bytes)
+		"          aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		"       22 5820" // y (32 bytes)
+		"          bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		"  06 50" // pinHashEnc (0x06) (16 bytes)
+		"     eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		"  09 04" // permissions = cm (no rpId needed)
+	>();
+	std::copy_n(x.begin(), x.size(), &params[17]);
+	std::copy_n(y.begin(), y.size(), &params[52]);
+	std::copy_n(pin_hash_enc.begin(), pin_hash_enc.size(), &params[86]);
+	return params;
+}
+
 #define EXPECT_ERROR_RESPONSE(expected_status) \
 	EXPECT_EQ(status, expected_status); \
 	EXPECT_EQ(response.length, 0)
@@ -839,6 +879,54 @@ protected:
 		test_ctap_client_pin(params_change_pin_from_1234_to_ABCD);
 	}
 
+	void get_pin_uv_auth_token_using_pin_v1() {
+		auto params_get_pin_uv_auth_token = create_get_pin_uv_auth_token_using_pin_with_permissions_v1(
+			test_platform_public_key_x,
+			test_platform_public_key_y,
+			hex::bytes<
+				"f8bb2954bb38ded5e78cc7de04600f74"
+			>()
+		);
+		test_ctap_client_pin(params_get_pin_uv_auth_token);
+	}
+
+	// newPinEnc = the padded 1234 (as in set_pin_1234_v1())
+	void change_pin_1234_to_1234_v1() {
+		auto params_change_pin_from_1234_to_1234 = create_change_pin_v1(
+			test_platform_public_key_x,
+			test_platform_public_key_y,
+			hex::bytes<
+				"f8bb2954bb38ded5e78cc7de04600f74"
+			>(),
+			hex::bytes<
+				"a8adf691fc0931227817b435a7bcf1f192b4198799416c1cfff993e46182aaca"
+				"dc4b21517bcbe58cecbb606a8df1cedf40cb7c79c86bc8f3142502175643450f"
+			>(),
+			hex::bytes<
+				"d5eea9a417644a3129b858a56569b740"
+			>()
+		);
+		test_ctap_client_pin(params_change_pin_from_1234_to_1234);
+	}
+
+	void change_pin_1234_to_5555_v1() {
+		auto params_change_pin_from_1234_to_5555 = create_change_pin_v1(
+			test_platform_public_key_x,
+			test_platform_public_key_y,
+			hex::bytes<
+				"f8bb2954bb38ded5e78cc7de04600f74"
+			>(),
+			hex::bytes<
+				"4935d698364636536e54f4c9e410ba34c4bf919c39687e28fdcb672356c9532f"
+				"2836b39c61f6dda196143e946ebde407a048a88b6ce94773d0cd62ad8df00125"
+			>(),
+			hex::bytes<
+				"f1e769a794a889595d803b880fb2c9e8"
+			>()
+		);
+		test_ctap_client_pin(params_change_pin_from_1234_to_5555);
+	}
+
 	void force_pin_change() {
 		ctap.config_state.flags |= CTAP_CONFIG_flags_force_pin_change;
 	}
@@ -868,6 +956,40 @@ TEST_F(CtapClientPinForceChangeTest, ChangePinClearsIt) {
 	EXPECT_FALSE(ctap_is_force_pin_change(&ctap));
 }
 
+TEST_F(CtapClientPinForceChangeTest, GetPinUvAuthTokenUsingPinFailsWithPolicyViolation) {
+	set_pin_1234_v1();
+	get_pin_uv_auth_token_using_pin_v1();
+	ASSERT_EQ(status, CTAP2_OK);
+	force_pin_change();
+	get_pin_uv_auth_token_using_pin_v1();
+	EXPECT_ERROR_RESPONSE(CTAP2_ERR_PIN_POLICY_VIOLATION);
+	// the PIN itself was right: no attempt is lost
+	EXPECT_EQ(ctap.pin_state.pin_total_remaining_attempts, CTAP_PIN_TOTAL_ATTEMPTS);
+	EXPECT_EQ(ctap.pin_boot_remaining_attempts, CTAP_PIN_PER_BOOT_ATTEMPTS);
+}
+
+TEST_F(CtapClientPinForceChangeTest, GetPinUvAuthTokenUsingPinFailsWhenThePinIsBelowTheMinimum) {
+	set_pin_1234_v1();
+	ctap.pin_state.pin_min_code_point_length = 5;
+	get_pin_uv_auth_token_using_pin_v1();
+	EXPECT_ERROR_RESPONSE(CTAP2_ERR_PIN_POLICY_VIOLATION);
+	EXPECT_EQ(ctap.pin_state.pin_total_remaining_attempts, CTAP_PIN_TOTAL_ATTEMPTS);
+}
+
+TEST_F(CtapClientPinForceChangeTest, ChangePinToTheSamePinFails) {
+	set_pin_1234_v1();
+	force_pin_change();
+	change_pin_1234_to_1234_v1();
+	EXPECT_ERROR_RESPONSE(CTAP2_ERR_PIN_POLICY_VIOLATION);
+	EXPECT_TRUE(ctap_is_force_pin_change(&ctap));
+}
+
+TEST_F(CtapClientPinForceChangeTest, ChangePinToTheSamePinWithoutForcePinChange) {
+	set_pin_1234_v1();
+	change_pin_1234_to_1234_v1();
+	EXPECT_SUCCESS_EMPTY_RESPONSE();
+}
+
 
 TEST_F(CtapClientPinForceChangeTest, PinComplexityPolicyRefusesARun) {
 	ctap.pin_complexity_policy_preconfigured = true;
@@ -892,6 +1014,23 @@ TEST_F(CtapClientPinForceChangeTest, PinComplexityPolicyAllowsAChangeToABCD) {
 	ctap.pin_complexity_policy_preconfigured = true; // 1234 stays: only a new PIN is checked
 	change_pin_1234_to_ABCD_v1();
 	EXPECT_EQ(status, CTAP2_OK);
+}
+
+TEST_F(CtapClientPinForceChangeTest, WithoutPinComplexityPolicyAChangeTo5555Works) {
+	set_pin_1234_v1();
+	change_pin_1234_to_5555_v1();
+	EXPECT_SUCCESS_EMPTY_RESPONSE();
+}
+
+TEST_F(CtapClientPinForceChangeTest, PinComplexityPolicyRefusesAChangeTo5555) {
+	set_pin_1234_v1();
+	ctap.pin_complexity_policy_preconfigured = true;
+	change_pin_1234_to_5555_v1();
+	EXPECT_ERROR_RESPONSE(CTAP2_ERR_PIN_POLICY_VIOLATION);
+	// 1234 still works
+	get_pin_token_v1();
+	EXPECT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(ctap.pin_state.pin_total_remaining_attempts, CTAP_PIN_TOTAL_ATTEMPTS);
 }
 
 } // namespace

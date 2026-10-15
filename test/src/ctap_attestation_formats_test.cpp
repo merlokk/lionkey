@@ -96,6 +96,16 @@ protected:
 		return std::string(text, n);
 	}
 
+	bytes auth_data() {
+		CborValue v = member(CTAP_makeCredential_res_authData);
+		EXPECT_TRUE(cbor_value_is_byte_string(&v));
+		size_t n = 0;
+		EXPECT_EQ(cbor_value_calculate_string_length(&v, &n), CborNoError);
+		bytes out(n);
+		EXPECT_EQ(cbor_value_copy_byte_string(&v, out.data(), &n, nullptr), CborNoError);
+		return out;
+	}
+
 	size_t att_stmt_entries() {
 		CborValue v = member(CTAP_makeCredential_res_attStmt);
 		size_t n = 99;
@@ -141,6 +151,36 @@ TEST_F(CtapAttestationFormatsTest, NothingSupportedOrEmptyIsPacked) {
 TEST_F(CtapAttestationFormatsTest, NotAStringIsRefused) {
 	make_credential({0x81, 0x01});
 	EXPECT_EQ(status, CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
+}
+
+TEST_F(CtapAttestationFormatsTest, NotAStringAfterASupportedOneIsRefused) {
+	bytes preference = strings({"packed"});
+	preference[0] = 0x82;
+	preference.push_back(0x05); // ["packed", 5]
+	make_credential(preference);
+	EXPECT_EQ(status, CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
+}
+
+TEST_F(CtapAttestationFormatsTest, NoneKeepsTheAuthData) {
+	make_credential(strings({"packed"}));
+	ASSERT_EQ(status, CTAP2_OK);
+	const bytes packed = auth_data();
+	make_credential(strings({"none"}));
+	ASSERT_EQ(status, CTAP2_OK);
+	const bytes none = auth_data();
+	// rpIdHash (32), flags (1), signCount (4), AAGUID (16), credentialIdLength (2), credentialId, publicKey
+	ASSERT_GT(packed.size(), 55u);
+	ASSERT_EQ(none.size(), packed.size());
+	EXPECT_EQ(bytes(none.begin(), none.begin() + 33), bytes(packed.begin(), packed.begin() + 33));
+	EXPECT_NE(none[32] & CTAP_authenticator_data_flags_at, 0);
+	EXPECT_EQ(bytes(none.begin() + 37, none.begin() + 55), bytes(packed.begin() + 37, packed.begin() + 55));
+	const size_t id_length = (static_cast<size_t>(none[53]) << 8) | none[54];
+	ASSERT_LT(55 + id_length, none.size());
+	EXPECT_NE(bytes(none.begin() + 55, none.begin() + 55 + static_cast<long>(id_length)),
+		bytes(packed.begin() + 55, packed.begin() + 55 + static_cast<long>(id_length))); // a new credential
+	// the public key: a COSE_Key map
+	EXPECT_EQ(none[55 + id_length], packed[55 + id_length]);
+	EXPECT_EQ(none[55 + id_length] & 0xe0, 0xa0);
 }
 
 TEST_F(CtapAttestationFormatsTest, GetInfoListsPackedOnly) {
