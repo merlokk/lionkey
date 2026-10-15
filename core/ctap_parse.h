@@ -512,12 +512,17 @@ LION_ATTR_ALWAYS_INLINE static inline bool ctap_permissions_include_any_of(uint3
 #define CTAP_authenticatorConfig_subCmd_setMinPINLength              0x03
 #define CTAP_authenticatorConfig_subCmd_enableLongTouchForReset      0x04
 #define CTAP_authenticatorConfig_subCmd_vendorPrototype              0xFF
+// maxRPIDsForSetMinPINLength (getInfo 0x10)
+#define CTAP_MAX_MIN_PIN_LENGTH_RP_IDS 8
 typedef struct CTAP_authenticatorConfig_subCmdParams {
 	const uint8_t *raw; // not a param, pointer to the raw bytes of the CBOR map
 	size_t raw_size; // not a param, size (in bytes) of the CBOR-encoded raw data
 	uint32_t present; // not a param, holds parsing info (if param was parsed, i.e., present)
 	uint8_t newMinPINLength;
-	size_t minPinLengthRPIDs_length; // the RP IDs themselves are not kept (yet)
+	// the number of RP IDs in the request (may exceed CTAP_MAX_MIN_PIN_LENGTH_RP_IDS);
+	// the first CTAP_MAX_MIN_PIN_LENGTH_RP_IDS of them (pointers into the request)
+	size_t minPinLengthRPIDs_length;
+	ctap_string_t minPinLengthRPIDs[CTAP_MAX_MIN_PIN_LENGTH_RP_IDS];
 	bool forceChangePin;
 	bool pinComplexityPolicy;
 } CTAP_authenticatorConfig_subCmdParams;

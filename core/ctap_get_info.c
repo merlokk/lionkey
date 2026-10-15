@@ -47,9 +47,10 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_extensions));
 	{
 		CborEncoder array;
-		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 2));
+		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 3));
 		cbor_encoding_check(cbor_encode_text_string(&array, "credProtect", 11));
 		cbor_encoding_check(cbor_encode_text_string(&array, "hmac-secret", 11));
+		cbor_encoding_check(cbor_encode_text_string(&array, "minPinLength", 12));
 		cbor_encoding_check(cbor_encoder_close_container(&map, &array));
 	}
 
@@ -181,10 +182,9 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_minPINLength));
 	cbor_encoding_check(cbor_encode_uint(&map, ctap_get_pin_min_code_point_length(state)));
 
-	// maxRPIDsForSetMinPINLength (0x10): MUST be present iff setMinPINLength is supported;
-	// 0 = no RP IDs can be added (the minPinLength extension is not supported yet)
+	// maxRPIDsForSetMinPINLength (0x10): MUST be present iff setMinPINLength is supported
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_maxRPIDsForSetMinPINLength));
-	cbor_encoding_check(cbor_encode_uint(&map, 0));
+	cbor_encoding_check(cbor_encode_uint(&map, CTAP_MAX_MIN_PIN_LENGTH_RP_IDS));
 
 	// longTouchForReset (0x18, CTAP 2.3): present = supported (enableLongTouchForReset),
 	// true = authenticatorReset takes a sustained touch (see ctap_reset())

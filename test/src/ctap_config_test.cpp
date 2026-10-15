@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include <gtest_custom_assertions.h>
 #include <hex.hpp>
+#include <algorithm>
 #include <optional>
+#include <string>
 #include <vector>
 extern "C" {
 #include <ctap.h>
@@ -108,6 +110,50 @@ protected:
 		return r;
 	}
 
+public:
+	// makeCredential (rp `rp_id`, 3 bytes) with {"minPinLength": true}: the authenticator data
+	std::vector<uint8_t> make_credential_with_min_pin_length(const char *rp_id) {
+		std::vector<uint8_t> r = {0xa5, 0x01, 0x58, 0x20};
+		r.insert(r.end(), 32, 0x00);
+		r.insert(r.end(), {0x02, 0xa1, 0x62, 'i', 'd', 0x63});
+		r.insert(r.end(), rp_id, rp_id + 3);
+		r.insert(r.end(), {0x03, 0xa1, 0x62, 'i', 'd', 0x41, 0x01});
+		r.insert(r.end(), {0x04, 0x81, 0xa2, 0x63, 'a', 'l', 'g', 0x26, 0x64, 't', 'y', 'p', 'e',
+			0x6a, 'p', 'u', 'b', 'l', 'i', 'c', '-', 'k', 'e', 'y'});
+		r.insert(r.end(), {0x06, 0xa1});
+		r.insert(r.end(), min_pin_length_key_bytes, min_pin_length_key_bytes + 13);
+		r.push_back(0xf5);
+		request(CTAP_CMD_MAKE_CREDENTIAL, r);
+		EXPECT_EQ(status, CTAP2_OK);
+		if (status != CTAP2_OK) {
+			return {};
+		}
+		CborValue it;
+		EXPECT_EQ(cbor_parser_init(response.data, response.length, 0, &parser, &it), CborNoError);
+		// {1: fmt, 2: authData, 3: attStmt}: walk to key 2
+		CborValue map;
+		EXPECT_EQ(cbor_value_enter_container(&it, &map), CborNoError);
+		while (!cbor_value_at_end(&map)) {
+			uint64_t key;
+			EXPECT_EQ(cbor_value_get_uint64(&map, &key), CborNoError);
+			EXPECT_EQ(cbor_value_advance(&map), CborNoError);
+			if (key == 2) {
+				size_t n = 0;
+				EXPECT_EQ(cbor_value_calculate_string_length(&map, &n), CborNoError);
+				std::vector<uint8_t> out(n);
+				EXPECT_EQ(cbor_value_copy_byte_string(&map, out.data(), &n, nullptr), CborNoError);
+				return out;
+			}
+			EXPECT_EQ(cbor_value_advance(&map), CborNoError);
+		}
+		ADD_FAILURE() << "no authData";
+		return {};
+	}
+	static constexpr uint8_t min_pin_length_key_bytes[13] = {
+		0x6c, 'm', 'i', 'n', 'P', 'i', 'n', 'L', 'e', 'n', 'g', 't', 'h'
+	};
+protected:
+
 	// a config request authenticated with the current token
 	void config(uint8_t sub_command, const std::vector<uint8_t> &sub_params = {}) {
 		request(CTAP_CMD_CONFIG, config_request(sub_command, sub_params, auth_param(sub_command, sub_params)));
@@ -186,7 +232,19 @@ TEST_F(CtapConfigTest, GetInfoAdvertisesConfig) {
 	ASSERT_TRUE(max_rp_ids.has_value());
 	uint64_t n = 99;
 	EXPECT_EQ(cbor_value_get_uint64(&*max_rp_ids, &n), CborNoError);
-	EXPECT_EQ(n, 0u);
+	EXPECT_EQ(n, 8u);
+	auto extensions = get_info_member(CTAP_authenticatorGetInfo_res_extensions);
+	ASSERT_TRUE(extensions.has_value());
+	CborValue extension;
+	ASSERT_EQ(cbor_value_enter_container(&*extensions, &extension), CborNoError);
+	bool min_pin_length_listed = false;
+	while (!cbor_value_at_end(&extension)) {
+		bool equal = false;
+		EXPECT_EQ(cbor_value_text_string_equals(&extension, "minPinLength", &equal), CborNoError);
+		min_pin_length_listed |= equal;
+		EXPECT_EQ(cbor_value_advance(&extension), CborNoError);
+	}
+	EXPECT_TRUE(min_pin_length_listed);
 	auto commands = get_info_member(CTAP_authenticatorGetInfo_res_authenticatorConfigCommands);
 	ASSERT_TRUE(commands.has_value());
 	size_t length = 0;
@@ -321,13 +379,91 @@ TEST_F(CtapConfigTest, SetMinPinLengthAboveTheMaximum) {
 	EXPECT_EQ(status, CTAP2_ERR_PIN_POLICY_VIOLATION);
 }
 
-TEST_F(CtapConfigTest, SetMinPinLengthRefusesRpIds) {
-	// {2: ["example.com"]}: the minPinLength extension is not supported
+// {2: [rp_ids...]} (each RP ID shorter than 24 bytes)
+std::vector<uint8_t> rp_ids_params(std::initializer_list<std::string> rp_ids) {
+	std::vector<uint8_t> p{0xa1, 0x02, static_cast<uint8_t>(0x80 | rp_ids.size())};
+	for (const auto &id : rp_ids) {
+		p.push_back(static_cast<uint8_t>(0x60 | id.size()));
+		p.insert(p.end(), id.begin(), id.end());
+	}
+	return p;
+}
+
+std::vector<uint8_t> make_credential_min_pin_length(CtapConfigTest *t, const char *rp_id) {
+	return t->make_credential_with_min_pin_length(rp_id);
+}
+
+TEST_F(CtapConfigTest, SetMinPinLengthStoresRpIds) {
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"a.b", "x.y"}));
+	EXPECT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 2u);
+	// a later list replaces it
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"c.d"}));
+	EXPECT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 1u);
+	// an empty one changes nothing
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, {0xa1, 0x02, 0x80});
+	EXPECT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 1u);
+}
+
+TEST_F(CtapConfigTest, SetMinPinLengthTooManyRpIds) {
 	config_unauthenticated(
 		CTAP_authenticatorConfig_subCmd_setMinPINLength,
-		{0xa1, 0x02, 0x81, 0x6b, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm'}
+		rp_ids_params({"a.a", "b.b", "c.c", "d.d", "e.e", "f.f", "g.g", "h.h", "i.i"})
 	);
-	EXPECT_EQ(status, CTAP1_ERR_INVALID_PARAMETER);
+	EXPECT_EQ(status, CTAP2_ERR_KEY_STORE_FULL);
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 0u);
+	config_unauthenticated(
+		CTAP_authenticatorConfig_subCmd_setMinPINLength,
+		rp_ids_params({"a.a", "b.b", "c.c", "d.d", "e.e", "f.f", "g.g", "h.h"})
+	);
+	EXPECT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 8u);
+}
+
+TEST_F(CtapConfigTest, SetMinPinLengthRpIdsMustBeStrings) {
+	// {2: [1]}
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, {0xa1, 0x02, 0x81, 0x01});
+	EXPECT_EQ(status, CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
+}
+
+TEST_F(CtapConfigTest, ResetClearsRpIds) {
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"a.b"}));
+	ASSERT_EQ(status, CTAP2_OK);
+	request(CTAP_CMD_RESET);
+	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 0u);
+}
+
+// "minPinLength" as a CBOR text string
+const std::vector<uint8_t> min_pin_length_key{
+	0x6c, 'm', 'i', 'n', 'P', 'i', 'n', 'L', 'e', 'n', 'g', 't', 'h'
+};
+
+bool contains(const std::vector<uint8_t> &haystack, const std::vector<uint8_t> &needle) {
+	return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end()) != haystack.end();
+}
+
+TEST_F(CtapConfigTest, MinPinLengthExtensionForAListedRp) {
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, min_pin_length(6));
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"a.b"}));
+	ASSERT_EQ(status, CTAP2_OK);
+	auto auth_data = make_credential_min_pin_length(this, "a.b");
+	ASSERT_GT(auth_data.size(), 37u);
+	EXPECT_NE(auth_data[32] & CTAP_authenticator_data_flags_ed, 0);
+	auto expected = min_pin_length_key;
+	expected.push_back(0x06);
+	EXPECT_TRUE(contains(auth_data, expected));
+}
+
+TEST_F(CtapConfigTest, MinPinLengthExtensionForAnotherRpIsOmitted) {
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"x.y"}));
+	ASSERT_EQ(status, CTAP2_OK);
+	auto auth_data = make_credential_min_pin_length(this, "a.b");
+	ASSERT_GT(auth_data.size(), 37u);
+	EXPECT_EQ(auth_data[32] & CTAP_authenticator_data_flags_ed, 0);
+	EXPECT_FALSE(contains(auth_data, min_pin_length_key));
 }
 
 TEST_F(CtapConfigTest, ForceChangePinWithoutPin) {

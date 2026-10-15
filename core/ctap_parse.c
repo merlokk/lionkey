@@ -534,6 +534,20 @@ static uint8_t parse_make_credential_extensions(CborValue *it, CTAP_makeCredenti
 			params->extensions_present |= CTAP_extension_credProtect;
 			cbor_decoding_check(cbor_value_advance_fixed(&map));
 
+		} else if (ctap_string_matches(&key, &ctap_str("minPinLength"))) {
+
+			// 12.4. Minimum PIN Length Extension (minPinLength)
+			// https://fidoalliance.org/specs/fido-v2.2-ps-20250714/fido-client-to-authenticator-protocol-v2.2-ps-20250714.html#sctn-minpinlength-extension
+
+			debug_log("minPinLength" nl);
+			ctap_cbor_ensure_type(cbor_value_is_boolean(&map));
+			bool value;
+			cbor_decoding_check(cbor_value_get_boolean(&map, &value));
+			if (value) {
+				params->extensions_present |= CTAP_extension_minPinLength;
+			}
+			cbor_decoding_check(cbor_value_advance_fixed(&map));
+
 		} else if (ctap_string_matches(&key, &ctap_str("hmac-secret"))) {
 
 			// 12.5. HMAC Secret Extension (hmac-secret)
@@ -1166,13 +1180,24 @@ static uint8_t parse_config_subcommand_params(CborValue *it, CTAP_authenticatorC
 				ctap_set_present(params, CTAP_authenticatorConfig_setMinPINLength_newMinPINLength);
 				break;
 
-			case CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs:
+			case CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs: {
 				debug_log("CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs" nl);
 				ctap_cbor_ensure_type(cbor_value_is_array(&map));
 				cbor_decoding_check(cbor_value_get_array_length(&map, &params->minPinLengthRPIDs_length));
-				cbor_decoding_check(cbor_value_advance(&map));
+				CborValue array;
+				cbor_decoding_check(cbor_value_enter_container(&map, &array));
+				for (size_t j = 0; j < params->minPinLengthRPIDs_length; ++j) {
+					// every element must be a text string, only the first ones are kept
+					ctap_string_t rp_id;
+					ctap_check(parse_text_string_to_ctap_string(&array, &rp_id));
+					if (j < CTAP_MAX_MIN_PIN_LENGTH_RP_IDS) {
+						params->minPinLengthRPIDs[j] = rp_id;
+					}
+				}
+				cbor_decoding_check(cbor_value_leave_container(&map, &array));
 				ctap_set_present(params, CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs);
 				break;
+			}
 
 			case CTAP_authenticatorConfig_setMinPINLength_forceChangePin:
 				debug_log("CTAP_authenticatorConfig_setMinPINLength_forceChangePin" nl);

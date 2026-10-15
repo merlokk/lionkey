@@ -131,9 +131,15 @@ static uint8_t config_set_min_pin_length(ctap_state_t *const state, const CTAP_a
 	) ? params->newMinPINLength : current_min;
 
 	// 2. If minPinLengthRPIDs is present and the minPinLength extension is not supported,
-	//    return CTAP1_ERR_INVALID_PARAMETER.
-	if (params_present && ctap_param_is_present(params, CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs)) {
-		return CTAP1_ERR_INVALID_PARAMETER;
+	//    return CTAP1_ERR_INVALID_PARAMETER. (It is supported.)
+	const bool rp_ids_present = params_present
+		&& ctap_param_is_present(params, CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs)
+		&& params->minPinLengthRPIDs_length > 0;
+
+	// 8.1. If the list is longer than maxRPIDsForSetMinPINLength, return an error
+	//      (no code given; checked first so that a refused request changes nothing).
+	if (rp_ids_present && params->minPinLengthRPIDs_length > CTAP_MAX_MIN_PIN_LENGTH_RP_IDS) {
+		return CTAP2_ERR_KEY_STORE_FULL;
 	}
 
 	// 3. If newMinPINLength < current minimum PIN length, return CTAP2_ERR_PIN_POLICY_VIOLATION.
@@ -171,10 +177,60 @@ static uint8_t config_set_min_pin_length(ctap_state_t *const state, const CTAP_a
 		ctap_all_pin_protocols_reset_pin_uv_auth_token(state);
 	}
 
-	// 8. minPinLengthRPIDs: refused in step 2.
+	// 8. If minPinLengthRPIDs is present and contains at least one string:
+	//    2. + 3. no pre-configured list: the given list replaces the previously added one.
+	//    4. If it cannot be stored, return CTAP2_ERR_KEY_STORE_FULL.
+	if (rp_ids_present) {
+		uint8_t hashes[CTAP_MAX_MIN_PIN_LENGTH_RP_IDS][CTAP_SHA256_HASH_SIZE];
+		const size_t count = params->minPinLengthRPIDs_length;
+		for (size_t i = 0; i < count; ++i) {
+			const ctap_string_t *const rp_id = &params->minPinLengthRPIDs[i];
+			ctap_crypto_check(state->crypto->sha256_compute_digest(
+				state->crypto, rp_id->data, rp_id->size, hashes[i]
+			));
+		}
+		ctap_storage_item_t item = {
+			.key = CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS,
+		};
+		const ctap_storage_t *const storage = state->storage;
+		item.handle = storage->find_item(storage, &item) == CTAP_STORAGE_OK ? item.handle : 0u;
+		item.key = CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS;
+		item.size = count * CTAP_SHA256_HASH_SIZE;
+		item.data = &hashes[0][0];
+		if (storage->create_or_update_item(storage, &item) != CTAP_STORAGE_OK) {
+			return CTAP2_ERR_KEY_STORE_FULL;
+		}
+	}
 
 	return CTAP2_OK;
 
+}
+
+bool ctap_min_pin_length_rp_id_allowed(const ctap_state_t *const state, const uint8_t *const rp_id_hash) {
+	ctap_storage_item_t item = {
+		.key = CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS,
+	};
+	const ctap_storage_t *const storage = state->storage;
+	if (storage->find_item(storage, &item) != CTAP_STORAGE_OK) {
+		return false;
+	}
+	for (size_t offset = 0; offset + CTAP_SHA256_HASH_SIZE <= item.size; offset += CTAP_SHA256_HASH_SIZE) {
+		if (memcmp(&item.data[offset], rp_id_hash, CTAP_SHA256_HASH_SIZE) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+size_t ctap_min_pin_length_rp_ids_count(const ctap_state_t *const state) {
+	ctap_storage_item_t item = {
+		.key = CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS,
+	};
+	const ctap_storage_t *const storage = state->storage;
+	if (storage->find_item(storage, &item) != CTAP_STORAGE_OK) {
+		return 0;
+	}
+	return item.size / CTAP_SHA256_HASH_SIZE;
 }
 
 // CTAP 2.3: enableLongTouchForReset

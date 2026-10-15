@@ -355,6 +355,12 @@ void ctap_init_config_persistent_state(ctap_state_t *state);
 // persists state->config_state; false on a storage error
 bool ctap_update_config_persistent_state(ctap_state_t *state);
 
+// minPinLength extension: whether the RP (SHA-256 of its RP ID) may read the minimum PIN length
+bool ctap_min_pin_length_rp_id_allowed(const ctap_state_t *state, const uint8_t *rp_id_hash);
+
+// the number of RP IDs set by setMinPINLength's minPinLengthRPIDs
+size_t ctap_min_pin_length_rp_ids_count(const ctap_state_t *state);
+
 // the sustained touch authenticatorReset takes (0 = an ordinary touch)
 uint32_t ctap_get_long_touch_for_reset_ms(const ctap_state_t *state);
 
