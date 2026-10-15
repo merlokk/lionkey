@@ -32,8 +32,8 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#authenticatorGetInfo
 
 	// start response map
-	const bool long_touch_for_reset = state->long_touch_for_reset_ms != 0u;
-	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 10 + (long_touch_for_reset ? 1 : 0)));
+	// 10 members + forcePINChange, maxRPIDsForSetMinPINLength, longTouchForReset, authenticatorConfigCommands
+	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 14));
 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_versions));
 	{
@@ -59,7 +59,9 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_options));
 	{
 		CborEncoder options;
-		cbor_encoding_check(cbor_encoder_create_map(&map, &options, 7));
+		cbor_encoding_check(cbor_encoder_create_map(&map, &options, 10));
+
+		// keys in the CTAP2 canonical CBOR order: shorter first, then bytewise
 
 		// this authenticator can create discoverable credentials (not default, must be specified)
 		cbor_encoding_check(cbor_encode_text_string(&options, "rk", 2));
@@ -73,8 +75,16 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 		cbor_encoding_check(cbor_encode_text_string(&options, "plat", 4));
 		cbor_encoding_check(cbor_encode_boolean(&options, false));
 
+		// the Always Require User Verification feature is supported; true = enabled (toggleAlwaysUv)
+		cbor_encoding_check(cbor_encode_text_string(&options, "alwaysUv", 8));
+		cbor_encoding_check(cbor_encode_boolean(&options, ctap_is_always_uv(state)));
+
 		// present and set to true -> the authenticatorCredentialManagement command is supported
 		cbor_encoding_check(cbor_encode_text_string(&options, "credMgmt", 8));
+		cbor_encoding_check(cbor_encode_boolean(&options, true));
+
+		// present and true -> the authenticatorConfig command is supported
+		cbor_encoding_check(cbor_encode_text_string(&options, "authnrCfg", 9));
 		cbor_encoding_check(cbor_encode_boolean(&options, true));
 
 		// If present, it indicates that the device is capable of accepting a PIN from the client
@@ -86,8 +96,13 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 		cbor_encoding_check(cbor_encode_text_string(&options, "pinUvAuthToken", 14));
 		cbor_encoding_check(cbor_encode_boolean(&options, true));
 
-		cbor_encoding_check(cbor_encode_text_string(&options, "makeCredUvNotRqd", 16));
+		// the setMinPINLength subcommand is supported (only with clientPin present, which it always is)
+		cbor_encoding_check(cbor_encode_text_string(&options, "setMinPINLength", 15));
 		cbor_encoding_check(cbor_encode_boolean(&options, true));
+
+		// MUST be false when alwaysUv is present and true
+		cbor_encoding_check(cbor_encode_text_string(&options, "makeCredUvNotRqd", 16));
+		cbor_encoding_check(cbor_encode_boolean(&options, !ctap_is_always_uv(state)));
 
 		cbor_encoding_check(cbor_encoder_close_container(&map, &options));
 	}
@@ -158,14 +173,33 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// This is applicable for ClientPIN only:
 	//   the minPINLength member MUST be absent if the clientPin option ID is absent;
 	//   it MUST be present if the authenticator supports authenticatorClientPIN (LionKey's case).
+	// forcePINChange (0x0C): true -> getPinToken and getPinUvAuthTokenUsingPinWithPermissions
+	// return errors until after a successful PIN change
+	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_forcePINChange));
+	cbor_encoding_check(cbor_encode_boolean(&map, ctap_is_force_pin_change(state)));
+
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_minPINLength));
 	cbor_encoding_check(cbor_encode_uint(&map, ctap_get_pin_min_code_point_length(state)));
 
-	// longTouchForReset (0x18, CTAP 2.3): present and true when authenticatorReset
-	// takes a sustained touch (see ctap_reset())
-	if (long_touch_for_reset) {
-		cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_longTouchForReset));
-		cbor_encoding_check(cbor_encode_boolean(&map, true));
+	// maxRPIDsForSetMinPINLength (0x10): MUST be present iff setMinPINLength is supported;
+	// 0 = no RP IDs can be added (the minPinLength extension is not supported yet)
+	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_maxRPIDsForSetMinPINLength));
+	cbor_encoding_check(cbor_encode_uint(&map, 0));
+
+	// longTouchForReset (0x18, CTAP 2.3): present = supported (enableLongTouchForReset),
+	// true = authenticatorReset takes a sustained touch (see ctap_reset())
+	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_longTouchForReset));
+	cbor_encoding_check(cbor_encode_boolean(&map, ctap_get_long_touch_for_reset_ms(state) != 0u));
+
+	// authenticatorConfigCommands (0x1F, CTAP 2.3): the supported authenticatorConfig subcommands
+	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_authenticatorConfigCommands));
+	{
+		CborEncoder array;
+		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 3));
+		cbor_encoding_check(cbor_encode_uint(&array, CTAP_authenticatorConfig_subCmd_toggleAlwaysUv));
+		cbor_encoding_check(cbor_encode_uint(&array, CTAP_authenticatorConfig_subCmd_setMinPINLength));
+		cbor_encoding_check(cbor_encode_uint(&array, CTAP_authenticatorConfig_subCmd_enableLongTouchForReset));
+		cbor_encoding_check(cbor_encoder_close_container(&map, &array));
 	}
 
 	// close response map

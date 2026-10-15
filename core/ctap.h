@@ -71,6 +71,22 @@ static_assert(
 	"sizeof(ctap_pin_persistent_state_t) == 4 + CTAP_PIN_HASH_SIZE"
 );
 
+// persistent authenticatorConfig state (CTAP_STORAGE_KEY_CONFIG), see ctap_config.c
+// alwaysUv option is present and true (toggleAlwaysUv)
+#define CTAP_CONFIG_flags_always_uv              (1u << 0)
+// forcePINChange (getInfo 0x0C): set by setMinPINLength, cleared by changePIN
+#define CTAP_CONFIG_flags_force_pin_change       (1u << 1)
+// enableLongTouchForReset (CTAP 2.3) was invoked
+#define CTAP_CONFIG_flags_long_touch_for_reset   (1u << 2)
+typedef struct LION_ATTR_PACKED ctap_config_persistent_state {
+	uint8_t flags;
+	uint8_t reserved[3];
+} ctap_config_persistent_state_t;
+static_assert(
+	sizeof(ctap_config_persistent_state_t) == 4,
+	"sizeof(ctap_config_persistent_state_t) == 4"
+);
+
 #define CTAP_RESPONSE_BUFFER_SIZE   4096
 
 typedef struct ctap_response {
@@ -149,11 +165,20 @@ typedef struct ctap_state {
 	uint32_t init_time;
 	uint32_t current_time;
 
-	// longTouchForReset (CTAP 2.3): 0 = reset takes an ordinary touch,
-	// otherwise the duration of the sustained touch it takes
-	// (and getInfo reports longTouchForReset = true).
+	// longTouchForReset (CTAP 2.3): 0 = reset takes an ordinary touch
+	// (unless enableLongTouchForReset was invoked, see ctap_get_long_touch_for_reset_ms()),
+	// otherwise the duration of the sustained touch it takes.
 	// Set by the platform; ctap_init() leaves it as it is.
 	uint32_t long_touch_for_reset_ms;
+
+	// authenticatorReset is only allowed this long after ctap_init()
+	// (the spec: within 10 seconds of power-up for authenticators with no display).
+	// 0 = CTAP_RESET_WINDOW_DEFAULT_MS, CTAP_RESET_WINDOW_NONE = no limit.
+	// Set by the platform; ctap_init() leaves it as it is.
+	uint32_t reset_window_ms;
+
+	ctap_config_persistent_state_t config_state LION_ATTR_ALIGNED(4);
+	uint32_t config_state_item_handle;
 
 	ctap_pin_protocol_t pin_protocols[2];
 	uint8_t pin_boot_remaining_attempts;
@@ -174,6 +199,17 @@ LION_ATTR_ALWAYS_INLINE static inline uint8_t ctap_get_pin_total_remaining_attem
 LION_ATTR_ALWAYS_INLINE static inline uint8_t ctap_get_pin_min_code_point_length(const ctap_state_t *const state) {
 	return state->pin_state.pin_min_code_point_length;
 }
+
+LION_ATTR_ALWAYS_INLINE static inline bool ctap_is_always_uv(const ctap_state_t *const state) {
+	return (state->config_state.flags & CTAP_CONFIG_flags_always_uv) != 0u;
+}
+
+LION_ATTR_ALWAYS_INLINE static inline bool ctap_is_force_pin_change(const ctap_state_t *const state) {
+	return (state->config_state.flags & CTAP_CONFIG_flags_force_pin_change) != 0u;
+}
+
+#define CTAP_RESET_WINDOW_DEFAULT_MS (10u * 1000u)
+#define CTAP_RESET_WINDOW_NONE       UINT32_MAX
 
 LION_ATTR_ALWAYS_INLINE static inline bool ctap_has_stateful_command_state(const ctap_state_t *const state) {
 	return state->stateful_command_state.active_cmd != CTAP_STATEFUL_CMD_NONE;
@@ -307,5 +343,19 @@ uint8_t ctap_reset(ctap_state_t *state, CborValue *it, CborEncoder *encoder);
 uint8_t ctap_credential_management(ctap_state_t *state, CborValue *it, CborEncoder *encoder);
 
 uint8_t ctap_selection(ctap_state_t *state, CborValue *it, CborEncoder *encoder);
+
+uint8_t ctap_config(ctap_state_t *state, CborValue *it, CborEncoder *encoder);
+
+// persists state->pin_state
+void ctap_update_pin_persistent_state(ctap_state_t *state);
+
+// loads the persistent config state (ctap_init())
+void ctap_init_config_persistent_state(ctap_state_t *state);
+
+// persists state->config_state; false on a storage error
+bool ctap_update_config_persistent_state(ctap_state_t *state);
+
+// the sustained touch authenticatorReset takes (0 = an ordinary touch)
+uint32_t ctap_get_long_touch_for_reset_ms(const ctap_state_t *state);
 
 #endif // LIONKEY_CTAP_H

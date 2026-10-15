@@ -20,10 +20,12 @@ uint8_t ctap_reset(ctap_state_t *const state, CborValue *const it, CborEncoder *
 	// * In case of authenticators with no display,
 	//   request MUST have come to the authenticator within 10 seconds of powering up of the authenticator.
 	// * If the request comes after 10 seconds of powering up, the authenticator returns CTAP2_ERR_NOT_ALLOWED.
+	//   The window is configurable (ctap_state_t.reset_window_ms), e.g. none on an authenticator with a display.
 #if LIONKEY_DEVELOPMENT_OVERRIDE != 1
+	const uint32_t reset_window_ms = state->reset_window_ms == 0u ? CTAP_RESET_WINDOW_DEFAULT_MS : state->reset_window_ms;
 	const uint32_t elapsed_ms_since_power_on = state->current_time - state->init_time;
-	if (elapsed_ms_since_power_on > (10 * 1000)) {
-		debug_log(red("reset command received after 10 seconds of powering up") nl);
+	if (reset_window_ms != CTAP_RESET_WINDOW_NONE && elapsed_ms_since_power_on > reset_window_ms) {
+		debug_log(red("reset command received after %" PRIu32 " ms of powering up") nl, reset_window_ms);
 		return CTAP2_ERR_NOT_ALLOWED;
 	}
 #endif
@@ -34,8 +36,9 @@ uint8_t ctap_reset(ctap_state_t *const state, CborValue *const it, CborEncoder *
 	// * If user presence is explicitly denied, the authenticator returns CTAP2_ERR_OPERATION_DENIED.
 
 	// longTouchForReset (CTAP 2.3): the evidence of user interaction is a sustained touch
-	ctap_user_presence_result_t up_result = state->long_touch_for_reset_ms != 0u
-		? ctap_wait_for_long_touch(state->long_touch_for_reset_ms)
+	const uint32_t long_touch_ms = ctap_get_long_touch_for_reset_ms(state);
+	ctap_user_presence_result_t up_result = long_touch_ms != 0u
+		? ctap_wait_for_long_touch(long_touch_ms)
 		: ctap_wait_for_user_presence();
 	switch (up_result) {
 		case CTAP_UP_RESULT_CANCEL:

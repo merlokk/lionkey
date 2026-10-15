@@ -506,6 +506,37 @@ LION_ATTR_ALWAYS_INLINE static inline bool ctap_permissions_include_any_of(uint3
 	return (permissions & mask) != 0u;
 }
 
+// 6.11. authenticatorConfig (0x0D)
+#define CTAP_authenticatorConfig_subCmd_enableEnterpriseAttestation  0x01
+#define CTAP_authenticatorConfig_subCmd_toggleAlwaysUv               0x02
+#define CTAP_authenticatorConfig_subCmd_setMinPINLength              0x03
+#define CTAP_authenticatorConfig_subCmd_enableLongTouchForReset      0x04
+#define CTAP_authenticatorConfig_subCmd_vendorPrototype              0xFF
+typedef struct CTAP_authenticatorConfig_subCmdParams {
+	const uint8_t *raw; // not a param, pointer to the raw bytes of the CBOR map
+	size_t raw_size; // not a param, size (in bytes) of the CBOR-encoded raw data
+	uint32_t present; // not a param, holds parsing info (if param was parsed, i.e., present)
+	uint8_t newMinPINLength;
+	size_t minPinLengthRPIDs_length; // the RP IDs themselves are not kept (yet)
+	bool forceChangePin;
+	bool pinComplexityPolicy;
+} CTAP_authenticatorConfig_subCmdParams;
+#define CTAP_authenticatorConfig_setMinPINLength_newMinPINLength      0x01
+#define CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs    0x02
+#define CTAP_authenticatorConfig_setMinPINLength_forceChangePin       0x03
+#define CTAP_authenticatorConfig_setMinPINLength_pinComplexityPolicy  0x04
+typedef struct CTAP_authenticatorConfig {
+	uint32_t present; // not a param, holds parsing info (if param was parsed, i.e., present)
+	uint8_t subCommand;
+	CTAP_authenticatorConfig_subCmdParams subCommandParams;
+	uint8_t pinUvAuthProtocol;
+	ctap_string_t pinUvAuthParam;
+} CTAP_authenticatorConfig;
+#define CTAP_authenticatorConfig_subCommand         0x01
+#define CTAP_authenticatorConfig_subCommandParams   0x02
+#define CTAP_authenticatorConfig_pinUvAuthProtocol  0x03
+#define CTAP_authenticatorConfig_pinUvAuthParam     0x04
+
 // 6.8. authenticatorCredentialManagement (0x0A)
 // https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#authenticatorCredentialManagement
 typedef struct CTAP_credentialManagement_subCmdParams {
@@ -601,5 +632,7 @@ uint8_t ctap_parse_make_credential_pub_key_cred_params(CTAP_makeCredential *mc);
 uint8_t ctap_parse_get_assertion(CborValue *it, CTAP_getAssertion *mc);
 
 uint8_t ctap_parse_credential_management(CborValue *it, CTAP_credentialManagement *cm);
+
+uint8_t ctap_parse_config(CborValue *it, CTAP_authenticatorConfig *cfg);
 
 #endif // LIONKEY_CTAP_PARSE_H

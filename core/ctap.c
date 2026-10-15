@@ -101,6 +101,7 @@ void ctap_init(ctap_state_t *state) {
 	state->init_time = ctap_get_current_time();
 
 	ctap_init_pin_persistent_state(state);
+	ctap_init_config_persistent_state(state);
 
 	state->pin_boot_remaining_attempts = CTAP_PIN_PER_BOOT_ATTEMPTS;
 
@@ -129,11 +130,12 @@ static const ctap_command_handler_t ctap_command_handlers[] = {
 	[CTAP_CMD_RESET] = ctap_reset,
 	[CTAP_CMD_CREDENTIAL_MANAGEMENT] = ctap_credential_management,
 	[CTAP_CMD_SELECTION] = ctap_selection,
+	[CTAP_CMD_CONFIG] = ctap_config,
 };
 static const uint8_t ctap_command_handlers_num = sizeof(ctap_command_handlers) / sizeof(ctap_command_handler_t);
 static_assert(
-	sizeof(ctap_command_handlers) / sizeof(ctap_command_handler_t) == 12,
-	"sizeof(ctap_command_handlers) / sizeof(ctap_command_handler) == 12"
+	sizeof(ctap_command_handlers) / sizeof(ctap_command_handler_t) == 14,
+	"sizeof(ctap_command_handlers) / sizeof(ctap_command_handler) == 14"
 );
 
 ctap_command_handler_t ctap_get_command_handler(const uint8_t cmd) {
@@ -156,11 +158,12 @@ static const ctap_string_t ctap_command_names[] = {
 	[CTAP_CMD_RESET] = ctap_str_i("CTAP_CMD_RESET"),
 	[CTAP_CMD_CREDENTIAL_MANAGEMENT] = ctap_str_i("CTAP_CMD_CREDENTIAL_MANAGEMENT"),
 	[CTAP_CMD_SELECTION] = ctap_str_i("CTAP_CMD_SELECTION"),
+	[CTAP_CMD_CONFIG] = ctap_str_i("CTAP_CMD_CONFIG"),
 };
 static const uint8_t ctap_command_names_num = sizeof(ctap_command_names) / sizeof(ctap_string_t);
 static_assert(
-	sizeof(ctap_command_names) / sizeof(ctap_string_t) == 12,
-	"sizeof(ctap_command_names) / sizeof(ctap_string_t) == 12"
+	sizeof(ctap_command_names) / sizeof(ctap_string_t) == 14,
+	"sizeof(ctap_command_names) / sizeof(ctap_string_t) == 14"
 );
 
 LION_ATTR_ALWAYS_INLINE static inline const ctap_string_t *ctap_get_command_name(const uint8_t cmd) {

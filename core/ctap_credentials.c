@@ -589,12 +589,22 @@ uint8_t ctap_make_credential(ctap_state_t *const state, CborValue *const it, Cbo
 		}
 	}
 
-	// 6. (not applicable to LionKey) If the alwaysUv option ID is present and true then ...
+	// 6. If the alwaysUv option ID is present and true then:
+	//    1. Let the makeCredUvNotRqd option ID be treated as false.
+	//    2. If the authenticator is not protected by some form of user verification:
+	//       clientPin is supported for mc -> CTAP2_ERR_PUAT_REQUIRED.
+	//    3. + 4. If pinUvAuthParam is absent (and no built-in UV, not applicable to LionKey):
+	//       CTAP2_ERR_PUAT_REQUIRED.
+	const bool always_uv = ctap_is_always_uv(state);
+	if (always_uv && (!ctap_is_pin_set(state) || !pinUvAuthParam_present)) {
+		return CTAP2_ERR_PUAT_REQUIRED;
+	}
 
 	// 7. If the makeCredUvNotRqd option ID is present and set to true in the authenticatorGetInfo response:
 	//    Note:
 	//      This step returns an error if the platform tries to create a discoverable credential
 	//      without performing some form of user verification.
+	//    (with alwaysUv, Step 6 already required pinUvAuthParam)
 	if (ctap_is_pin_set(state) && !pinUvAuthParam_present && discoverable) {
 		return CTAP2_ERR_PUAT_REQUIRED;
 	}
@@ -1137,7 +1147,19 @@ uint8_t ctap_get_assertion(ctap_state_t *const state, CborValue *const it, CborE
 		}
 	}
 
-	// 5. (not applicable to LionKey) If the alwaysUv option ID is present and true and ...
+	// 5. If the alwaysUv option ID is present and true and the "up" option is present and true then:
+	//    1. If the authenticator is not protected by some form of user verification:
+	//       clientPin is supported for ga -> CTAP2_ERR_PUAT_REQUIRED.
+	//    2. If pinUvAuthParam is present, go to Step 6. ("uv" true / built-in UV: not applicable to LionKey)
+	//    5. clientPin supported for ga -> CTAP2_ERR_PUAT_REQUIRED.
+	if ((
+		ctap_is_always_uv(state)
+		&& is_option_present(&params->options, CTAP_ma_ga_option_up)
+		&& get_option_value(&params->options, CTAP_ma_ga_option_up)
+		&& (!ctap_is_pin_set(state) || !pinUvAuthParam_present)
+	)) {
+		return CTAP2_ERR_PUAT_REQUIRED;
+	}
 
 	// 6. If the authenticator is protected by some form of user verification, then:
 	if (ctap_is_pin_set(state)) {

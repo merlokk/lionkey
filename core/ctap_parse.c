@@ -1148,6 +1148,125 @@ static uint8_t parse_credential_management_subcommand_params(CborValue *it, CTAP
 
 }
 
+static uint8_t parse_config_subcommand_params(CborValue *it, CTAP_authenticatorConfig_subCmdParams *params) {
+
+	ctap_parse_map_enter("authenticatorConfig subCommandParams");
+
+	params->raw = it->source.ptr;
+
+	for (size_t i = 0; i < map_length; i++) {
+
+		ctap_parse_map_get_int_key();
+
+		switch (key) {
+
+			case CTAP_authenticatorConfig_setMinPINLength_newMinPINLength:
+				debug_log("CTAP_authenticatorConfig_setMinPINLength_newMinPINLength" nl);
+				ctap_check(parse_uint8(&map, &params->newMinPINLength));
+				ctap_set_present(params, CTAP_authenticatorConfig_setMinPINLength_newMinPINLength);
+				break;
+
+			case CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs:
+				debug_log("CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs" nl);
+				ctap_cbor_ensure_type(cbor_value_is_array(&map));
+				cbor_decoding_check(cbor_value_get_array_length(&map, &params->minPinLengthRPIDs_length));
+				cbor_decoding_check(cbor_value_advance(&map));
+				ctap_set_present(params, CTAP_authenticatorConfig_setMinPINLength_minPinLengthRPIDs);
+				break;
+
+			case CTAP_authenticatorConfig_setMinPINLength_forceChangePin:
+				debug_log("CTAP_authenticatorConfig_setMinPINLength_forceChangePin" nl);
+				ctap_cbor_ensure_type(cbor_value_is_boolean(&map));
+				cbor_decoding_check(cbor_value_get_boolean(&map, &params->forceChangePin));
+				cbor_decoding_check(cbor_value_advance_fixed(&map));
+				ctap_set_present(params, CTAP_authenticatorConfig_setMinPINLength_forceChangePin);
+				break;
+
+			case CTAP_authenticatorConfig_setMinPINLength_pinComplexityPolicy:
+				debug_log("CTAP_authenticatorConfig_setMinPINLength_pinComplexityPolicy" nl);
+				ctap_cbor_ensure_type(cbor_value_is_boolean(&map));
+				cbor_decoding_check(cbor_value_get_boolean(&map, &params->pinComplexityPolicy));
+				cbor_decoding_check(cbor_value_advance_fixed(&map));
+				ctap_set_present(params, CTAP_authenticatorConfig_setMinPINLength_pinComplexityPolicy);
+				break;
+
+			default:
+				debug_log("parse_config_subcommand_params: unknown key %d" nl, key);
+				cbor_decoding_check(cbor_value_advance(&map));
+
+		}
+
+	}
+
+	ctap_parse_map_leave();
+
+	params->raw_size = it->source.ptr - params->raw;
+	assert(params->raw_size > 0); // even a map with zero key-value pairs is 1 byte (0xa0)
+
+	return CTAP2_OK;
+
+}
+
+uint8_t ctap_parse_config(CborValue *it, CTAP_authenticatorConfig *cfg) {
+
+	// no parameters at all (checked before ctap_parse_map_enter() dereferences it)
+	if (it == NULL) {
+		return CTAP2_ERR_MISSING_PARAMETER;
+	}
+
+	ctap_parse_map_enter("authenticatorConfig parameters");
+
+	memset(cfg, 0, sizeof(CTAP_authenticatorConfig));
+
+	for (size_t i = 0; i < map_length; i++) {
+
+		ctap_parse_map_get_int_key();
+
+		switch (key) {
+
+			case CTAP_authenticatorConfig_subCommand:
+				debug_log("CTAP_authenticatorConfig_subCommand" nl);
+				ctap_check(parse_uint8(&map, &cfg->subCommand));
+				ctap_set_present(cfg, CTAP_authenticatorConfig_subCommand);
+				break;
+
+			case CTAP_authenticatorConfig_subCommandParams:
+				debug_log("CTAP_authenticatorConfig_subCommandParams" nl);
+				ctap_check(parse_config_subcommand_params(&map, &cfg->subCommandParams));
+				ctap_set_present(cfg, CTAP_authenticatorConfig_subCommandParams);
+				break;
+
+			case CTAP_authenticatorConfig_pinUvAuthProtocol:
+				debug_log("CTAP_authenticatorConfig_pinUvAuthProtocol" nl);
+				ctap_check(parse_uint8(&map, &cfg->pinUvAuthProtocol));
+				ctap_set_present(cfg, CTAP_authenticatorConfig_pinUvAuthProtocol);
+				break;
+
+			case CTAP_authenticatorConfig_pinUvAuthParam:
+				debug_log("CTAP_authenticatorConfig_pinUvAuthParam" nl);
+				ctap_check(parse_byte_string_to_ctap_string(&map, &cfg->pinUvAuthParam));
+				ctap_set_present(cfg, CTAP_authenticatorConfig_pinUvAuthParam);
+				break;
+
+			default:
+				debug_log("ctap_parse_config: unknown key %d" nl, key);
+				cbor_decoding_check(cbor_value_advance(&map));
+
+		}
+
+	}
+
+	ctap_parse_map_leave();
+
+	// 1. If subCommand is absent, return CTAP2_ERR_MISSING_PARAMETER.
+	if (!ctap_param_is_present(cfg, CTAP_authenticatorConfig_subCommand)) {
+		return CTAP2_ERR_MISSING_PARAMETER;
+	}
+
+	return CTAP2_OK;
+
+}
+
 uint8_t ctap_parse_credential_management(CborValue *it, CTAP_credentialManagement *cm) {
 
 	ctap_parse_map_enter("authenticatorCredentialManagement parameters");

@@ -10,6 +10,7 @@ typedef enum ctap_storage_key {
 	CTAP_STORAGE_KEY_PIN_INFO = 1,
 	CTAP_STORAGE_KEY_CREDENTIAL = 2,
 	CTAP_STORAGE_KEY_GLOBAL_SIGNATURE_COUNTER = 3,
+	CTAP_STORAGE_KEY_CONFIG = 4,
 } ctap_storage_key_t;
 
 typedef enum ctap_storage_status {

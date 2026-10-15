@@ -55,6 +55,10 @@ static void update_persistent_pin_state(ctap_state_t *state) {
 	}
 }
 
+void ctap_update_pin_persistent_state(ctap_state_t *state) {
+	update_persistent_pin_state(state);
+}
+
 static void decrement_pin_remaining_attempts(ctap_state_t *state) {
 
 	assert(state->pin_boot_remaining_attempts > 0);
@@ -288,11 +292,24 @@ static uint8_t set_pin(
 		"CTAP_PIN_HASH_SIZE must be less than or equal to 32 bytes (the size of the SHA-256 output)"
 	);
 
+	// 6.5.5.6. Changing existing PIN: 5.13
+	//   If the forcePINChange member is true and the new PIN equals CurrentStoredPIN,
+	//   return CTAP2_ERR_PIN_POLICY_VIOLATION.
+	if (ctap_is_force_pin_change(state) && memcmp(state->pin_state.pin_hash, new_pin_hash, CTAP_PIN_HASH_SIZE) == 0) {
+		return CTAP2_ERR_PIN_POLICY_VIOLATION;
+	}
+
 	memcpy(state->pin_state.pin_hash, new_pin_hash, CTAP_PIN_HASH_SIZE);
 	state->pin_state.pin_code_point_length = new_pin_code_point_length;
 	state->pin_state.is_pin_set = 1u;
 	reset_pin_remaining_attempts(state, false);
 	update_persistent_pin_state(state);
+
+	// 6.5.5.6. Changing existing PIN: 5.16 Authenticator sets forcePINChange to false.
+	if (ctap_is_force_pin_change(state)) {
+		state->config_state.flags &= (uint8_t) ~CTAP_CONFIG_flags_force_pin_change;
+		ctap_update_config_persistent_state(state);
+	}
 
 	return CTAP2_OK;
 
@@ -402,6 +419,7 @@ static uint8_t get_pin_token_using_pin_with_permissions(
 	const ctap_string_t *const pin_hash_enc,
 	const uint32_t permissions,
 	const CTAP_rpId *const rp_id,
+	const uint8_t force_pin_change_error,
 	CborEncoder *encoder
 ) {
 
@@ -420,7 +438,16 @@ static uint8_t get_pin_token_using_pin_with_permissions(
 	// Check the provided pin.
 	ctap_check(check_pin_hash(state, pin_protocol, pin_hash_enc, shared_secret));
 
-	// TODO: Handle forcePINChange.
+	// If the forcePINChange member is true, return the given error
+	// (getPinToken: CTAP2_ERR_PIN_INVALID, getPinUvAuthTokenUsingPinWithPermissions: CTAP2_ERR_PIN_POLICY_VIOLATION).
+	// A pinUvAuthToken MUST NOT be returned if PINCodePointLength is less than the current minimum PIN length
+	// (setMinPINLength sets forcePINChange then; checked here too).
+	if (
+		ctap_is_force_pin_change(state)
+		|| state->pin_state.pin_code_point_length < ctap_get_pin_min_code_point_length(state)
+	) {
+		return force_pin_change_error;
+	}
 
 	// Create a new pinUvAuthToken by calling resetPinUvAuthToken()
 	// for all pinUvAuthProtocols supported by this authenticator.
@@ -512,6 +539,7 @@ uint8_t ctap_client_pin_get_pin_token(
 		// Note that the permissions RP ID is not set even though it is required for mc and ga permissions.
 		// It will be set on first use of the pinUvAuthToken with an RP ID.
 		NULL,
+		CTAP2_ERR_PIN_INVALID,
 		encoder
 	);
 
@@ -613,6 +641,7 @@ uint8_t ctap_client_pin_get_pin_uv_auth_token_using_pin_with_permissions(
 		cp->permissions,
 		// If the rpId parameter is present, associate the permissions RP ID with the pinUvAuthToken.
 		rpId_present ? &cp->rpId : NULL,
+		CTAP2_ERR_PIN_POLICY_VIOLATION,
 		encoder
 	);
 

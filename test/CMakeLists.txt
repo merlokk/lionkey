@@ -118,6 +118,7 @@ add_library(core STATIC)
 target_sources(core PUBLIC
 		../core/ctap.c
 		../core/ctap_asn1.c
+		../core/ctap_config.c
 		../core/ctap_credential_management.c
 		../core/ctap_credential_store.c
 		../core/ctap_credentials.c
@@ -298,6 +299,7 @@ core_test(ctap_make_credential)
 core_test(ctap_get_assertion)
 core_test(ctap_get_info)
 core_test(ctap_reset)
+core_test(ctap_config)
 core_test(ctap_asn1)
 core_test(ctap_string_truncation)
 core_test(ctaphid)

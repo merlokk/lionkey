@@ -789,4 +789,83 @@ TEST_F(CtapClientPinTest, GetPinTokenV2) {
 	EXPECT_SAME_BYTES_S(response.length, response.data, expected_response.data());
 }
 
+
+// forcePINChange (authenticatorConfig setMinPINLength): getPinToken fails until a PIN change
+
+class CtapClientPinForceChangeTest : public CtapClientPinTest {
+protected:
+	void set_pin_1234_v1() {
+		auto params_set_pin_1234 = create_set_pin_v1(
+			test_platform_public_key_x,
+			test_platform_public_key_y,
+			hex::bytes<
+				"a8adf691fc0931227817b435a7bcf1f192b4198799416c1cfff993e46182aaca"
+				"dc4b21517bcbe58cecbb606a8df1cedf40cb7c79c86bc8f3142502175643450f"
+			>(),
+			hex::bytes<
+				"ca787d2f472d341660b372a629551dd2"
+			>()
+		);
+		test_ctap_client_pin(params_set_pin_1234);
+		ASSERT_EQ(status, CTAP2_OK);
+	}
+
+	void get_pin_token_v1() {
+		auto params_get_pin_token = create_get_pin_token_v1(
+			test_platform_public_key_x,
+			test_platform_public_key_y,
+			hex::bytes<
+				"f8bb2954bb38ded5e78cc7de04600f74"
+			>()
+		);
+		test_ctap_client_pin(params_get_pin_token);
+	}
+
+	void change_pin_1234_to_ABCD_v1() {
+		auto params_change_pin_from_1234_to_ABCD = create_change_pin_v1(
+			test_platform_public_key_x,
+			test_platform_public_key_y,
+			hex::bytes<
+				"f8bb2954bb38ded5e78cc7de04600f74"
+			>(),
+			hex::bytes<
+				"081b4773243c506f9abaeb546a615e81b78b8a118f3424bc1bec3e6a31353809"
+				"d870b95420474fe2150fb81ddd5d4090feea180f1f13c7973ed75349e79fbf1a"
+			>(),
+			hex::bytes<
+				"6d0321cafeacb682a9ea0e1089e70c3e"
+			>()
+		);
+		test_ctap_client_pin(params_change_pin_from_1234_to_ABCD);
+	}
+
+	void force_pin_change() {
+		ctap.config_state.flags |= CTAP_CONFIG_flags_force_pin_change;
+	}
+};
+
+TEST_F(CtapClientPinForceChangeTest, GetPinTokenFailsWithPinInvalid) {
+	set_pin_1234_v1();
+	force_pin_change();
+	get_pin_token_v1();
+	EXPECT_EQ(status, CTAP2_ERR_PIN_INVALID);
+	// the PIN itself was right: no attempt is lost
+	EXPECT_EQ(ctap.pin_state.pin_total_remaining_attempts, CTAP_PIN_TOTAL_ATTEMPTS);
+}
+
+TEST_F(CtapClientPinForceChangeTest, GetPinTokenFailsWhenThePinIsBelowTheMinimum) {
+	set_pin_1234_v1();
+	ctap.pin_state.pin_min_code_point_length = 5;
+	get_pin_token_v1();
+	EXPECT_EQ(status, CTAP2_ERR_PIN_INVALID);
+}
+
+TEST_F(CtapClientPinForceChangeTest, ChangePinClearsIt) {
+	set_pin_1234_v1();
+	force_pin_change();
+	change_pin_1234_to_ABCD_v1();
+	EXPECT_EQ(status, CTAP2_OK);
+	EXPECT_FALSE(ctap_is_force_pin_change(&ctap));
+}
+
 } // namespace

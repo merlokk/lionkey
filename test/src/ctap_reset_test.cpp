@@ -12,10 +12,14 @@ namespace {
 
 class CtapResetTest : public testing::Test {
 protected:
+	uint8_t ctap_persistent_memory[16 * 1024]{};
 	uint8_t ctap_response_buffer[CTAP_RESPONSE_BUFFER_SIZE]{};
 	ctap_software_crypto_context_t crypto_ctx{};
 	const ctap_crypto_t crypto = CTAP_SOFTWARE_CRYPTO_CONST_INIT(&crypto_ctx);
-	ctap_memory_storage_context_t storage_ctx{};
+	ctap_memory_storage_context_t storage_ctx{
+		.memory_size = sizeof(ctap_persistent_memory),
+		.memory = ctap_persistent_memory,
+	};
 	const ctap_storage_t storage = CTAP_MEMORY_STORAGE_CONST_INIT(&storage_ctx);
 	ctap_state_t ctap = CTAP_STATE_CONST_INIT(&crypto, &storage);
 	ctap_response_t response{
@@ -23,6 +27,7 @@ protected:
 		.data = ctap_response_buffer,
 	};
 	uint8_t status{};
+	CborParser parser{}; // the CborValues get_info_member() returns point into it
 
 	CtapResetTest() {
 		test_reset_user_presence();
@@ -38,7 +43,6 @@ protected:
 	std::optional<CborValue> get_info_member(uint64_t key) {
 		request(CTAP_CMD_GET_INFO);
 		EXPECT_EQ(status, CTAP2_OK);
-		CborParser parser;
 		CborValue it;
 		EXPECT_EQ(cbor_parser_init(response.data, response.length, 0, &parser, &it), CborNoError);
 		EXPECT_TRUE(cbor_value_is_map(&it));
@@ -58,8 +62,13 @@ protected:
 
 };
 
-TEST_F(CtapResetTest, GetInfoWithoutLongTouchHasNoLongTouchForReset) {
-	EXPECT_FALSE(get_info_member(CTAP_authenticatorGetInfo_res_longTouchForReset).has_value());
+TEST_F(CtapResetTest, GetInfoWithoutLongTouchReportsFalse) {
+	// present: enableLongTouchForReset is supported
+	auto value = get_info_member(CTAP_authenticatorGetInfo_res_longTouchForReset);
+	ASSERT_TRUE(value.has_value());
+	bool long_touch = true;
+	ASSERT_EQ(cbor_value_get_boolean(&*value, &long_touch), CborNoError);
+	EXPECT_FALSE(long_touch);
 }
 
 TEST_F(CtapResetTest, GetInfoReportsLongTouchForReset) {
