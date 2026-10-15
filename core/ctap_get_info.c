@@ -48,7 +48,7 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// (pinComplexityPolicyURL), authenticatorConfigCommands
 	const bool pin_complexity_policy = ctap_is_pin_complexity_policy(state);
 	const bool pin_complexity_policy_url = state->pin_complexity_policy_url != NULL;
-	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 15 + (pin_complexity_policy_url ? 1 : 0)));
+	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 16 + (pin_complexity_policy_url ? 1 : 0)));
 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_versions));
 	{
@@ -217,6 +217,15 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// maxRPIDsForSetMinPINLength (0x10): MUST be present iff setMinPINLength is supported
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_maxRPIDsForSetMinPINLength));
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_MAX_MIN_PIN_LENGTH_RP_IDS));
+
+	// attestationFormats (0x16, CTAP 2.2): "none" is implied and MUST NOT be listed
+	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_attestationFormats));
+	{
+		CborEncoder array;
+		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 1));
+		cbor_encoding_check(cbor_encode_text_string(&array, "packed", 6));
+		cbor_encoding_check(cbor_encoder_close_container(&map, &array));
+	}
 
 	// longTouchForReset (0x18, CTAP 2.3): present = supported (enableLongTouchForReset),
 	// true = authenticatorReset takes a sustained touch (see ctap_reset())

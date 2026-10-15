@@ -312,6 +312,13 @@ typedef struct CTAP_getAssertion_hmac_secret {
 #define CTAP_makeCredential_pinUvAuthParam         0x08
 #define CTAP_makeCredential_pinUvAuthProtocol      0x09
 #define CTAP_makeCredential_enterpriseAttestation  0x0A
+#define CTAP_makeCredential_attestationFormatsPreference  0x0B
+
+// the attestation statement format of a makeCredential response
+typedef enum ctap_attestation_format {
+	CTAP_ATTESTATION_FORMAT_PACKED = 0, // self attestation (the default)
+	CTAP_ATTESTATION_FORMAT_NONE = 1,
+} ctap_attestation_format_t;
 // options for makeCredential: https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#makecred-option-key
 // options for getAssertion: https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#getassert-option-key
 #define CTAP_ma_ga_option_rk  (1u << 0)
@@ -340,6 +347,8 @@ typedef struct CTAP_makeCredential {
 	uint8_t credProtect;
 	// hmac-secret-mc (CTAP 2.2): the same input as getAssertion's hmac-secret
 	CTAP_getAssertion_hmac_secret hmac_secret_mc;
+	// attestationFormatsPreference (CTAP 2.2): the first supported entry, else packed
+	ctap_attestation_format_t attestation_format;
 } CTAP_makeCredential;
 // On success, the authenticator returns the following authenticatorMakeCredential response structure
 // which contains an attestation object plus additional information.

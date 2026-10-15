@@ -888,8 +888,13 @@ uint8_t ctap_make_credential(ctap_state_t *const state, CborValue *const it, Cbo
 	// start response map
 	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 3));
 	// fmt (0x01)
+	const bool no_attestation = mc.attestation_format == CTAP_ATTESTATION_FORMAT_NONE;
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_makeCredential_res_fmt));
-	cbor_encoding_check(cbor_encode_text_string(&map, "packed", 6));
+	if (no_attestation) {
+		cbor_encoding_check(cbor_encode_text_string(&map, "none", 4));
+	} else {
+		cbor_encoding_check(cbor_encode_text_string(&map, "packed", 6));
+	}
 	// authData (0x02)
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_makeCredential_res_authData));
 	cbor_encoding_check(cbor_encode_byte_string(
@@ -897,16 +902,22 @@ uint8_t ctap_make_credential(ctap_state_t *const state, CborValue *const it, Cbo
 		(const uint8_t *) &auth_data,
 		auth_data_total_size
 	));
-	// attStmt (0x03)
+	// attStmt (0x03): "none" is an empty map (WebAuthn 8.7 None Attestation Statement Format)
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_makeCredential_res_attStmt));
-	ctap_check(create_self_attestation_statement(
-		crypto,
-		&map,
-		&auth_data,
-		auth_data_total_size,
-		params->clientDataHash.data,
-		&credential
-	));
+	if (no_attestation) {
+		CborEncoder empty;
+		cbor_encoding_check(cbor_encoder_create_map(&map, &empty, 0));
+		cbor_encoding_check(cbor_encoder_close_container(&map, &empty));
+	} else {
+		ctap_check(create_self_attestation_statement(
+			crypto,
+			&map,
+			&auth_data,
+			auth_data_total_size,
+			params->clientDataHash.data,
+			&credential
+		));
+	}
 	// close response map
 	cbor_encoding_check(cbor_encoder_close_container(encoder, &map));
 

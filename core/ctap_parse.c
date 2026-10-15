@@ -694,6 +694,35 @@ uint8_t ctap_parse_make_credential(CborValue *it, CTAP_makeCredential *mc) {
 				ctap_set_present(params, CTAP_makeCredential_pinUvAuthProtocol);
 				break;
 
+			case CTAP_makeCredential_attestationFormatsPreference: {
+				// CTAP 2.2: a prioritized list of attestation statement format identifiers;
+				// the first one supported here wins, none supported (or empty): packed
+				debug_log("CTAP_makeCredential_attestationFormatsPreference" nl);
+				ctap_cbor_ensure_type(cbor_value_is_array(&map));
+				size_t length;
+				cbor_decoding_check(cbor_value_get_array_length(&map, &length));
+				CborValue array;
+				cbor_decoding_check(cbor_value_enter_container(&map, &array));
+				bool chosen = false;
+				for (size_t j = 0; j < length; ++j) {
+					ctap_string_t format;
+					ctap_check(parse_text_string_to_ctap_string(&array, &format));
+					if (chosen) {
+						continue;
+					}
+					if (ctap_string_matches(&format, &ctap_str("packed"))) {
+						mc->attestation_format = CTAP_ATTESTATION_FORMAT_PACKED;
+						chosen = true;
+					} else if (ctap_string_matches(&format, &ctap_str("none"))) {
+						mc->attestation_format = CTAP_ATTESTATION_FORMAT_NONE;
+						chosen = true;
+					}
+				}
+				cbor_decoding_check(cbor_value_leave_container(&map, &array));
+				ctap_set_present(params, CTAP_makeCredential_attestationFormatsPreference);
+				break;
+			}
+
 			case CTAP_makeCredential_enterpriseAttestation:
 				debug_log("CTAP_makeCredential_enterpriseAttestation" nl);
 				ctap_cbor_ensure_type(cbor_value_is_unsigned_integer(&map));
