@@ -1,5 +1,23 @@
 #include "ctap.h"
 
+// CTAP 2.2: verify(persistentPinUvAuthToken, subCommand || subCommandParams, pinUvAuthParam)
+static bool verify_with_persistent_token(
+	const CTAP_credentialManagement *params,
+	ctap_pin_protocol_t *pin_protocol
+) {
+	uint8_t verify_ctx[pin_protocol->verify_get_context_size(pin_protocol)];
+	ctap_pin_protocol_verify_init_with_persistent_pin_uv_auth_token(pin_protocol, &verify_ctx);
+	pin_protocol->verify_update(pin_protocol, &verify_ctx, &params->subCommand, sizeof(params->subCommand));
+	if (params->subCommandParams.raw_size > 0) {
+		pin_protocol->verify_update(
+			pin_protocol, &verify_ctx, params->subCommandParams.raw, params->subCommandParams.raw_size
+		);
+	}
+	return pin_protocol->verify_final(
+		pin_protocol, &verify_ctx, params->pinUvAuthParam.data, params->pinUvAuthParam.size
+	) == 0;
+}
+
 static inline uint8_t verify_credential_management_params(
 	ctap_state_t *state,
 	const CTAP_credentialManagement *params,
@@ -44,10 +62,14 @@ static inline uint8_t verify_credential_management_params(
 	return CTAP2_OK;
 }
 
-static uint8_t credential_management_get_creds_metadata(ctap_state_t *const state, CborEncoder *const encoder) {
+static uint8_t credential_management_get_creds_metadata(
+	ctap_state_t *const state,
+	const bool persistent_token_used,
+	CborEncoder *const encoder
+) {
 
 	// the pinUvAuthToken used for getCredsMetadata must NOT have a permissions RP ID associated
-	if (state->pin_uv_auth_token_state.rpId_set) {
+	if (!persistent_token_used && state->pin_uv_auth_token_state.rpId_set) {
 		return CTAP2_ERR_PIN_AUTH_INVALID;
 	}
 
@@ -102,10 +124,14 @@ static uint8_t encode_credential_management_enumerate_rps_response(
 
 }
 
-static uint8_t credential_management_enumerate_rps_begin(ctap_state_t *const state, CborEncoder *const encoder) {
+static uint8_t credential_management_enumerate_rps_begin(
+	ctap_state_t *const state,
+	const bool persistent_token_used,
+	CborEncoder *const encoder
+) {
 
 	// the pinUvAuthToken used for enumerateRPsBegin must NOT have a permissions RP ID associated
-	if (state->pin_uv_auth_token_state.rpId_set) {
+	if (!persistent_token_used && state->pin_uv_auth_token_state.rpId_set) {
 		return CTAP2_ERR_PIN_AUTH_INVALID;
 	}
 
@@ -231,6 +257,7 @@ static uint8_t encode_credential_management_enumerate_credentials_response(
 static uint8_t credential_management_enumerate_credentials_begin(
 	ctap_state_t *const state,
 	const CTAP_credentialManagement *const cm,
+	const bool persistent_token_used,
 	CborEncoder *const encoder
 ) {
 
@@ -244,8 +271,10 @@ static uint8_t credential_management_enumerate_credentials_begin(
 	// the pinUvAuthToken used for enumerateCredentialsBegin must
 	// either NOT have a permissions RP ID associated,
 	// or the associated permissions RP ID MUST match the RP ID of this request
+	// (the persistentPinUvAuthToken has no permissions RP ID)
 	if ((
-		state->pin_uv_auth_token_state.rpId_set
+		!persistent_token_used
+		&& state->pin_uv_auth_token_state.rpId_set
 		&& (
 			// the rpIDHash.size should already be checked by ctap_parse_credential_management()
 			// (resp. parse_credential_management_subcommand_params())
@@ -476,6 +505,9 @@ uint8_t ctap_credential_management(ctap_state_t *const state, CborValue *const i
 		return CTAP2_ERR_MISSING_PARAMETER;
 	}
 
+	// the persistentPinUvAuthToken (pcmr) authorized this request: its RP ID rules do not apply
+	bool persistent_token_used = false;
+
 	const bool pinUvAuthParamRequired =
 		cm.subCommand != CTAP_credentialManagement_subCmd_enumerateRPsGetNextRP
 		&& cm.subCommand != CTAP_credentialManagement_subCmd_enumerateCredentialsGetNextCredential;
@@ -489,19 +521,34 @@ uint8_t ctap_credential_management(ctap_state_t *const state, CborValue *const i
 		ctap_pin_protocol_t *pin_protocol;
 		// if the given pinUvAuthProtocol is not supported, it returns CTAP1_ERR_INVALID_PARAMETER
 		ctap_check(ctap_get_pin_protocol(state, cm.pinUvAuthProtocol, &pin_protocol));
-		// Authenticator calls verify(pinUvAuthToken, subCommand || subCommandParams, pinUvAuthParam)
-		ctap_check(verify_credential_management_params(state, &cm, pin_protocol));
+		// CTAP 2.2: the read operations try the persistentPinUvAuthToken first; it must have pcmr
+		const bool read_only =
+			cm.subCommand == CTAP_credentialManagement_subCmd_getCredsMetadata
+			|| cm.subCommand == CTAP_credentialManagement_subCmd_enumerateRPsBegin
+			|| cm.subCommand == CTAP_credentialManagement_subCmd_enumerateCredentialsBegin;
+		if (read_only && state->persistent_pin_uv_auth_tokens_ready && verify_with_persistent_token(&cm, pin_protocol)) {
+			if (!ctap_permissions_include_any_of(
+				state->persistent_pin_uv_auth_token_permissions,
+				CTAP_clientPIN_pinUvAuthToken_permission_pcmr
+			)) {
+				return CTAP2_ERR_PIN_AUTH_INVALID;
+			}
+			persistent_token_used = true;
+		} else {
+			// Authenticator calls verify(pinUvAuthToken, subCommand || subCommandParams, pinUvAuthParam)
+			ctap_check(verify_credential_management_params(state, &cm, pin_protocol));
+		}
 	}
 
 	switch (cm.subCommand) {
 
 		case CTAP_credentialManagement_subCmd_getCredsMetadata:
 			debug_log(magenta("CTAP_credentialManagement_subCmd_getCredsMetadata") nl);
-			return credential_management_get_creds_metadata(state, encoder);
+			return credential_management_get_creds_metadata(state, persistent_token_used, encoder);
 
 		case CTAP_credentialManagement_subCmd_enumerateRPsBegin:
 			debug_log(magenta("CTAP_credentialManagement_subCmd_enumerateRPsBegin") nl);
-			return credential_management_enumerate_rps_begin(state, encoder);
+			return credential_management_enumerate_rps_begin(state, persistent_token_used, encoder);
 
 		case CTAP_credentialManagement_subCmd_enumerateRPsGetNextRP:
 			debug_log(magenta("CTAP_credentialManagement_subCmd_enumerateRPsGetNextRP") nl);
@@ -509,7 +556,7 @@ uint8_t ctap_credential_management(ctap_state_t *const state, CborValue *const i
 
 		case CTAP_credentialManagement_subCmd_enumerateCredentialsBegin:
 			debug_log(magenta("CTAP_credentialManagement_subCmd_enumerateCredentialsBegin") nl);
-			return credential_management_enumerate_credentials_begin(state, &cm, encoder);
+			return credential_management_enumerate_credentials_begin(state, &cm, persistent_token_used, encoder);
 
 		case CTAP_credentialManagement_subCmd_enumerateCredentialsGetNextCredential:
 			debug_log(magenta("CTAP_credentialManagement_subCmd_enumerateCredentialsGetNextCredential") nl);

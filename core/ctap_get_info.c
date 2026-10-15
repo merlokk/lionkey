@@ -80,7 +80,7 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_options));
 	{
 		CborEncoder options;
-		cbor_encoding_check(cbor_encoder_create_map(&map, &options, 10));
+		cbor_encoding_check(cbor_encoder_create_map(&map, &options, 11));
 
 		// keys in the CTAP2 canonical CBOR order: shorter first, then bytewise
 
@@ -113,6 +113,10 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 		// -> if false, it indicates that PIN has not been set yet
 		cbor_encoding_check(cbor_encode_text_string(&options, "clientPin", 9));
 		cbor_encoding_check(cbor_encode_boolean(&options, ctap_is_pin_set(state)));
+
+		// CTAP 2.2: the pcmr permission (persistentPinUvAuthToken, read-only credential management)
+		cbor_encoding_check(cbor_encode_text_string(&options, "perCredMgmtRO", 13));
+		cbor_encoding_check(cbor_encode_boolean(&options, true));
 
 		cbor_encoding_check(cbor_encode_text_string(&options, "pinUvAuthToken", 14));
 		cbor_encoding_check(cbor_encode_boolean(&options, true));

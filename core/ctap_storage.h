@@ -15,6 +15,8 @@ typedef enum ctap_storage_key {
 	CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS = 5,
 	// U2F_REGISTER attestation: the private key (32 bytes) and its self-signed certificate (DER)
 	CTAP_STORAGE_KEY_U2F_ATTESTATION = 6,
+	// the persistentPinUvAuthTokens (one per PIN/UV auth protocol) and their permissions
+	CTAP_STORAGE_KEY_PERSISTENT_PUAT = 7,
 } ctap_storage_key_t;
 
 typedef enum ctap_storage_status {

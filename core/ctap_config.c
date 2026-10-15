@@ -181,8 +181,9 @@ static uint8_t config_set_min_pin_length(ctap_state_t *const state, const CTAP_a
 	if (force) {
 		uint8_t ret;
 		ctap_check(set_config_flags(state, CTAP_CONFIG_flags_force_pin_change, 0u));
-		// 7. resetPersistentPinUvAuthToken() (not applicable) and
+		// 7. resetPersistentPinUvAuthToken() and
 		//    resetPinUvAuthToken() for all pinUvAuthProtocols supported by this authenticator.
+		ctap_reset_persistent_pin_uv_auth_tokens(state);
 		ctap_all_pin_protocols_reset_pin_uv_auth_token(state);
 	}
 

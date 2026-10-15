@@ -191,6 +191,11 @@ typedef struct ctap_state {
 	ctap_config_persistent_state_t config_state LION_ATTR_ALIGNED(4);
 	uint32_t config_state_item_handle;
 
+	// the permissions of the persistentPinUvAuthTokens (pcmr or none)
+	uint32_t persistent_pin_uv_auth_token_permissions;
+	// made lazily (the first pcmr request) and stored; false: none yet (all zero, never verifies)
+	bool persistent_pin_uv_auth_tokens_ready;
+
 	ctap_pin_protocol_t pin_protocols[2];
 	uint8_t pin_boot_remaining_attempts;
 	ctap_pin_uv_auth_token_state pin_uv_auth_token_state;
@@ -379,6 +384,13 @@ bool ctap_crypto_supports_eddsa(const ctap_crypto_t *crypto);
 
 // persists state->pin_state
 void ctap_update_pin_persistent_state(ctap_state_t *state);
+
+// loads the persistentPinUvAuthTokens if there are any (ctap_init())
+void ctap_init_persistent_pin_uv_auth_tokens(ctap_state_t *state);
+
+// resetPersistentPinUvAuthToken() for every protocol: the tokens are dropped
+// (fresh ones are made at the next pcmr request), no permissions
+void ctap_reset_persistent_pin_uv_auth_tokens(ctap_state_t *state);
 
 // loads the persistent config state (ctap_init())
 void ctap_init_config_persistent_state(ctap_state_t *state);

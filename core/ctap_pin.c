@@ -71,6 +71,97 @@ LION_ATTR_WEAK bool ctap_pin_meets_complexity_policy(const uint8_t *pin, size_t 
 	return !repeated && !up && !down;
 }
 
+// CTAP_STORAGE_KEY_PERSISTENT_PUAT: permissions (4 bytes, little-endian) || a token per protocol
+#define PERSISTENT_PUAT_ITEM_SIZE (4 + 2 * CTAP_PIN_UV_AUTH_TOKEN_SIZE)
+
+static void store_persistent_pin_uv_auth_tokens(ctap_state_t *state) {
+	uint8_t data[PERSISTENT_PUAT_ITEM_SIZE];
+	const uint32_t p = state->persistent_pin_uv_auth_token_permissions;
+	data[0] = (uint8_t) p;
+	data[1] = (uint8_t) (p >> 8);
+	data[2] = (uint8_t) (p >> 16);
+	data[3] = (uint8_t) (p >> 24);
+	for (size_t i = 0; i < 2; ++i) {
+		memcpy(
+			&data[4 + i * CTAP_PIN_UV_AUTH_TOKEN_SIZE],
+			state->pin_protocols[i].persistent_pin_uv_auth_token,
+			CTAP_PIN_UV_AUTH_TOKEN_SIZE
+		);
+	}
+	const ctap_storage_t *const storage = state->storage;
+	ctap_storage_item_t item = {
+		.key = CTAP_STORAGE_KEY_PERSISTENT_PUAT,
+	};
+	item.handle = storage->find_item(storage, &item) == CTAP_STORAGE_OK ? item.handle : 0u;
+	item.key = CTAP_STORAGE_KEY_PERSISTENT_PUAT;
+	item.size = sizeof(data);
+	item.data = data;
+	if (storage->create_or_update_item(storage, &item) != CTAP_STORAGE_OK) {
+		error_log(red("storing the persistentPinUvAuthTokens failed") nl);
+	}
+	memset(data, 0, sizeof(data));
+}
+
+// fresh persistentPinUvAuthTokens (no permissions), not stored yet
+static bool make_persistent_pin_uv_auth_tokens(ctap_state_t *state) {
+	static_assert(sizeof(state->pin_protocols) / sizeof(ctap_pin_protocol_t) == 2, "two PIN/UV auth protocols");
+	for (size_t i = 0; i < 2; ++i) {
+		ctap_pin_protocol_t *const p = &state->pin_protocols[i];
+		if (state->crypto->rng_generate_data(
+			state->crypto, p->persistent_pin_uv_auth_token, sizeof(p->persistent_pin_uv_auth_token)
+		) != CTAP_CRYPTO_OK) {
+			error_log(red("persistentPinUvAuthToken: rng failed") nl);
+			return false;
+		}
+	}
+	state->persistent_pin_uv_auth_token_permissions = 0u;
+	state->persistent_pin_uv_auth_tokens_ready = true;
+	return true;
+}
+
+void ctap_reset_persistent_pin_uv_auth_tokens(ctap_state_t *state) {
+	for (size_t i = 0; i < 2; ++i) {
+		ctap_pin_protocol_t *const p = &state->pin_protocols[i];
+		memset(p->persistent_pin_uv_auth_token, 0, sizeof(p->persistent_pin_uv_auth_token));
+	}
+	state->persistent_pin_uv_auth_token_permissions = 0u;
+	state->persistent_pin_uv_auth_tokens_ready = false;
+	const ctap_storage_t *const storage = state->storage;
+	ctap_storage_item_t item = {
+		.key = CTAP_STORAGE_KEY_PERSISTENT_PUAT,
+	};
+	if (storage->find_item(storage, &item) == CTAP_STORAGE_OK) {
+		storage->delete_item(storage, item.handle);
+	}
+}
+
+void ctap_init_persistent_pin_uv_auth_tokens(ctap_state_t *state) {
+	const ctap_storage_t *const storage = state->storage;
+	ctap_storage_item_t item = {
+		.key = CTAP_STORAGE_KEY_PERSISTENT_PUAT,
+	};
+	if (storage->find_item(storage, &item) == CTAP_STORAGE_OK && item.size == PERSISTENT_PUAT_ITEM_SIZE) {
+		state->persistent_pin_uv_auth_token_permissions = (uint32_t) item.data[0]
+			| ((uint32_t) item.data[1] << 8)
+			| ((uint32_t) item.data[2] << 16)
+			| ((uint32_t) item.data[3] << 24);
+		for (size_t i = 0; i < 2; ++i) {
+			memcpy(
+				state->pin_protocols[i].persistent_pin_uv_auth_token,
+				&item.data[4 + i * CTAP_PIN_UV_AUTH_TOKEN_SIZE],
+				CTAP_PIN_UV_AUTH_TOKEN_SIZE
+			);
+		}
+		state->persistent_pin_uv_auth_tokens_ready = true;
+		return;
+	}
+	for (size_t i = 0; i < 2; ++i) {
+		memset(state->pin_protocols[i].persistent_pin_uv_auth_token, 0, CTAP_PIN_UV_AUTH_TOKEN_SIZE);
+	}
+	state->persistent_pin_uv_auth_token_permissions = 0u;
+	state->persistent_pin_uv_auth_tokens_ready = false;
+}
+
 void ctap_update_pin_persistent_state(ctap_state_t *state) {
 	update_persistent_pin_state(state);
 }
@@ -429,6 +520,9 @@ uint8_t ctap_client_pin_change_pin(
 	//      by this authenticator. (I.e. all existing pinUvAuthTokens are invalidated.)
 	ctap_all_pin_protocols_reset_pin_uv_auth_token(state);
 
+	// 5.20 (CTAP 2.2) resetPersistentPinUvAuthToken(): all persistent permissions are cleared on a PIN change
+	ctap_reset_persistent_pin_uv_auth_tokens(state);
+
 	return CTAP2_OK;
 
 }
@@ -470,6 +564,23 @@ static uint8_t get_pin_token_using_pin_with_permissions(
 		return force_pin_change_error;
 	}
 
+	// CTAP 2.2: pcmr (alone, see the caller) goes to the persistentPinUvAuthToken, which is returned;
+	// the pinUvAuthToken is left as it is
+	const bool persistent = permissions == CTAP_clientPIN_pinUvAuthToken_permission_pcmr;
+	const uint8_t *const token = persistent
+		? pin_protocol->persistent_pin_uv_auth_token
+		: pin_protocol->pin_uv_auth_token;
+	if (persistent) {
+		if (!state->persistent_pin_uv_auth_tokens_ready && !make_persistent_pin_uv_auth_tokens(state)) {
+			return CTAP1_ERR_OTHER;
+		}
+		if (state->persistent_pin_uv_auth_token_permissions != permissions) {
+			state->persistent_pin_uv_auth_token_permissions = permissions;
+			store_persistent_pin_uv_auth_tokens(state);
+		}
+		goto encrypt_and_return;
+	}
+
 	// Create a new pinUvAuthToken by calling resetPinUvAuthToken()
 	// for all pinUvAuthProtocols supported by this authenticator.
 	// (I.e. all existing pinUvAuthTokens are invalidated.)
@@ -490,15 +601,16 @@ static uint8_t get_pin_token_using_pin_with_permissions(
 
 	// The authenticator returns the encrypted pinUvAuthToken for the specified pinUvAuthProtocol,
 	// i.e. encrypt(shared secret, pinUvAuthToken).
+encrypt_and_return:;
 
 	const size_t encrypted_pin_uv_auth_token_length =
-		sizeof(pin_protocol->pin_uv_auth_token)
+		CTAP_PIN_UV_AUTH_TOKEN_SIZE
 		+ pin_protocol->encryption_extra_length;
 	uint8_t encrypted_pin_uv_auth_token[encrypted_pin_uv_auth_token_length];
 	if (pin_protocol->encrypt(
 		pin_protocol,
 		shared_secret,
-		pin_protocol->pin_uv_auth_token, sizeof(pin_protocol->pin_uv_auth_token),
+		token, CTAP_PIN_UV_AUTH_TOKEN_SIZE,
 		encrypted_pin_uv_auth_token
 	) != 0) {
 		assert(false);
@@ -648,6 +760,13 @@ uint8_t ctap_client_pin_get_pin_uv_auth_token_using_pin_with_permissions(
 		cp->permissions,
 		CTAP_clientPIN_pinUvAuthToken_permission_be
 		| CTAP_clientPIN_pinUvAuthToken_permission_lbw
+	)) {
+		return CTAP2_ERR_UNAUTHORIZED_PERMISSION;
+	}
+	// pcmr (perCredMgmtRO) only alone
+	if ((
+		ctap_permissions_include_any_of(cp->permissions, CTAP_clientPIN_pinUvAuthToken_permission_pcmr)
+		&& cp->permissions != CTAP_clientPIN_pinUvAuthToken_permission_pcmr
 	)) {
 		return CTAP2_ERR_UNAUTHORIZED_PERMISSION;
 	}

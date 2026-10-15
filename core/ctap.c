@@ -108,6 +108,8 @@ void ctap_init(ctap_state_t *state) {
 	// 6.5.5.1. Authenticator Configuration Operations Upon Power Up
 	// At power-up, the authenticator calls initialize for each pinUvAuthProtocol that it supports.
 	ctap_all_pin_protocols_initialize(state);
+	// after the PIN protocols: their persistent tokens
+	ctap_init_persistent_pin_uv_auth_tokens(state);
 
 	if (ctap_is_pin_set(state)) {
 		const uint8_t remaining_tries = ctap_get_pin_total_remaining_attempts(state);

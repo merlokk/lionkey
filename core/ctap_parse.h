@@ -506,6 +506,14 @@ typedef struct CTAP_clientPIN {
  */
 #define CTAP_clientPIN_pinUvAuthToken_permission_acfg  0x20
 
+/**
+ * Persistent Credential Management Read-Only (CTAP 2.2)
+ * RP ID: Ignored
+ * Given only alone, to the persistentPinUvAuthToken: authenticatorCredentialManagement
+ * read operations (getCredsMetadata, enumerateRPsBegin, enumerateCredentialsBegin).
+ */
+#define CTAP_clientPIN_pinUvAuthToken_permission_pcmr  0x40
+
 LION_ATTR_ALWAYS_INLINE static inline bool ctap_permissions_include_any_of(uint32_t permissions, uint32_t mask) {
 	return (permissions & mask) != 0u;
 }

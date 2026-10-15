@@ -32,6 +32,8 @@
 typedef struct ctap_pin_protocol {
 
 	uint8_t pin_uv_auth_token[CTAP_PIN_UV_AUTH_TOKEN_SIZE];
+	// CTAP 2.2: kept in the storage (CTAP_STORAGE_KEY_PERSISTENT_PUAT), see ctap_pin.c
+	uint8_t persistent_pin_uv_auth_token[CTAP_PIN_UV_AUTH_TOKEN_SIZE];
 	uint8_t key_agreement_public_key[64];
 	uint8_t key_agreement_private_key[32];
 
@@ -459,6 +461,11 @@ int ctap_pin_protocol_v2_verify_final(
 	const ctap_pin_protocol_t *protocol,
 	void *verify_ctx,
 	const uint8_t *signature, size_t signature_length
+);
+
+void ctap_pin_protocol_verify_init_with_persistent_pin_uv_auth_token(
+	const ctap_pin_protocol_t *protocol,
+	void *verify_ctx
 );
 
 #endif // LIONKEY_CTAP_PIN_PROTOCOL_H

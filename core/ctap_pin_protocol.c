@@ -378,6 +378,19 @@ void ctap_pin_protocol_v2_verify_init_with_shared_secret(
 	ctap_pin_protocol_verify_init(protocol, verify_ctx, hmac_key, hmac_key_length);
 }
 
+void ctap_pin_protocol_verify_init_with_persistent_pin_uv_auth_token(
+	const ctap_pin_protocol_t *const protocol,
+	void *const verify_ctx
+) {
+	// verify(persistentPinUvAuthToken, message, signature): no usage timer, no in-use state
+	ctap_pin_protocol_verify_init(
+		protocol,
+		verify_ctx,
+		protocol->persistent_pin_uv_auth_token,
+		sizeof(protocol->persistent_pin_uv_auth_token)
+	);
+}
+
 int ctap_pin_protocol_verify_init_with_pin_uv_auth_token(
 	const ctap_pin_protocol_t *const protocol,
 	void *const verify_ctx,
