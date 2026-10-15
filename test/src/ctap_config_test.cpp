@@ -257,6 +257,17 @@ TEST_F(CtapConfigTest, GetInfoAdvertisesConfig) {
 	size_t length = 0;
 	EXPECT_EQ(cbor_value_get_array_length(&*commands, &length), CborNoError);
 	EXPECT_EQ(length, 3u);
+	// [toggleAlwaysUv, setMinPINLength, enableLongTouchForReset]
+	CborValue command;
+	ASSERT_EQ(cbor_value_enter_container(&*commands, &command), CborNoError);
+	std::vector<uint64_t> values;
+	while (!cbor_value_at_end(&command)) {
+		uint64_t value = 0;
+		EXPECT_EQ(cbor_value_get_uint64(&command, &value), CborNoError);
+		values.push_back(value);
+		EXPECT_EQ(cbor_value_advance(&command), CborNoError);
+	}
+	EXPECT_EQ(values, (std::vector<uint64_t>{2, 3, 4}));
 }
 
 TEST_F(CtapConfigTest, NoParameters) {
@@ -433,6 +444,58 @@ TEST_F(CtapConfigTest, SetMinPinLengthTooManyRpIds) {
 	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 8u);
 }
 
+// a storage that refuses writes of one item key (the memory storage otherwise)
+uint32_t refused_storage_key = 0;
+
+ctap_storage_status_t refusing_create_or_update_item(const ctap_storage_t *storage, ctap_storage_item_t *item) {
+	if (item->key == refused_storage_key) {
+		return CTAP_STORAGE_ERROR;
+	}
+	return ctap_memory_storage_create_or_update_item(storage, item);
+}
+
+// a failed write leaves neither a raised minimum nor a new flag behind
+// (no PIN, so no pinUvAuthParam: the flag is pinComplexityPolicy)
+TEST_F(CtapConfigTest, SetMinPinLengthStorageFailureChangesNothing) {
+	ctap_storage_t refusing_storage = storage;
+	refusing_storage.create_or_update_item = refusing_create_or_update_item;
+	ctap_state_t refusing_ctap = CTAP_STATE_CONST_INIT(&crypto, &refusing_storage);
+	ctap_init(&refusing_ctap);
+	// {1: 6, 2: ["a.b"], 4: true}
+	const std::vector<uint8_t> params = config_request(
+		CTAP_authenticatorConfig_subCmd_setMinPINLength,
+		{0xa3, 0x01, 0x06, 0x02, 0x81, 0x63, 'a', '.', 'b', 0x04, 0xf5},
+		std::nullopt
+	);
+	const auto send = [&](uint32_t key) {
+		refused_storage_key = key;
+		const uint8_t s = ctap_request(&refusing_ctap, CTAP_CMD_CONFIG, params.size(), params.data(), &response);
+		refused_storage_key = 0;
+		return s;
+	};
+	const auto expect_unchanged = [&]() {
+		EXPECT_EQ(ctap_get_pin_min_code_point_length(&refusing_ctap), 4);
+		EXPECT_FALSE(ctap_is_pin_complexity_policy(&refusing_ctap));
+	};
+
+	// the RP ID list cannot be stored: nothing is written
+	EXPECT_EQ(send(CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS), CTAP2_ERR_KEY_STORE_FULL);
+	expect_unchanged();
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&refusing_ctap), 0u);
+
+	// the minimum cannot be stored: no flag after it
+	EXPECT_EQ(send(CTAP_STORAGE_KEY_PIN_INFO), CTAP1_ERR_OTHER);
+	expect_unchanged();
+	ctap_init(&refusing_ctap);
+	expect_unchanged();
+
+	// nothing refused
+	EXPECT_EQ(send(0), CTAP2_OK);
+	EXPECT_EQ(ctap_get_pin_min_code_point_length(&refusing_ctap), 6);
+	EXPECT_TRUE(ctap_is_pin_complexity_policy(&refusing_ctap));
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&refusing_ctap), 1u);
+}
+
 TEST_F(CtapConfigTest, SetMinPinLengthRpIdsMustBeStrings) {
 	// {2: [1]}
 	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, {0xa1, 0x02, 0x81, 0x01});
@@ -475,6 +538,25 @@ TEST_F(CtapConfigTest, MinPinLengthExtensionForAnotherRpIsOmitted) {
 	ASSERT_GT(auth_data.size(), 37u);
 	EXPECT_EQ(auth_data[32] & CTAP_authenticator_data_flags_ed, 0);
 	EXPECT_FALSE(contains(auth_data, min_pin_length_key));
+}
+
+TEST_F(CtapConfigTest, OnlyUnsupportedExtensionsGiveNoExtensionsInAuthData) {
+	auto auth_data = make_credential_with_extension(this, "a.b", "unknownExt");
+	ASSERT_GT(auth_data.size(), 55u);
+	EXPECT_EQ(auth_data[32] & CTAP_authenticator_data_flags_ed, 0);
+	EXPECT_NE(auth_data[32] & CTAP_authenticator_data_flags_at, 0);
+	// rpIdHash (32) flags (1) signCount (4) aaguid (16) credentialIdLength (2) credentialId, then the
+	// COSE public key ends the authenticator data (no extensions map after it)
+	const size_t credential_id_length = (size_t(auth_data[53]) << 8) | auth_data[54];
+	const size_t key_offset = 55 + credential_id_length;
+	ASSERT_LT(key_offset, auth_data.size());
+	CborParser key_parser;
+	CborValue key;
+	ASSERT_EQ(cbor_parser_init(&auth_data[key_offset], auth_data.size() - key_offset, 0, &key_parser, &key), CborNoError);
+	EXPECT_TRUE(cbor_value_is_map(&key));
+	ASSERT_EQ(cbor_value_advance(&key), CborNoError);
+	EXPECT_TRUE(cbor_value_at_end(&key));
+	EXPECT_EQ(cbor_value_get_next_byte(&key), auth_data.data() + auth_data.size());
 }
 
 TEST_F(CtapConfigTest, ForceChangePinWithoutPin) {
@@ -641,6 +723,83 @@ TEST_F(CtapConfigTest, PinComplexityPolicyExtensionForAListedRp) {
 	auto other = make_credential_with_extension(this, "c.d", "pinComplexityPolicy");
 	ASSERT_GT(other.size(), 37u);
 	EXPECT_EQ(other[32] & CTAP_authenticator_data_flags_ed, 0);
+}
+
+TEST_F(CtapConfigTest, PinComplexityPolicyExtensionIsFalseWhenOff) {
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"a.b"}));
+	ASSERT_EQ(status, CTAP2_OK);
+	auto auth_data = make_credential_with_extension(this, "a.b", "pinComplexityPolicy");
+	ASSERT_GT(auth_data.size(), 37u);
+	EXPECT_NE(auth_data[32] & CTAP_authenticator_data_flags_ed, 0);
+	const std::string id = "pinComplexityPolicy";
+	std::vector<uint8_t> expected{0x73};
+	expected.insert(expected.end(), id.begin(), id.end());
+	expected.push_back(0xf4);
+	EXPECT_TRUE(contains(auth_data, expected));
+	// not in getInfo extensions while off
+	request(CTAP_CMD_GET_INFO);
+	ASSERT_EQ(status, CTAP2_OK);
+	const std::vector<uint8_t> data(response.data, response.data + response.length);
+	EXPECT_FALSE(contains(data, std::vector<uint8_t>(id.begin(), id.end())));
+}
+
+// fido.bin from before authenticatorConfig: a PIN and a credential, no CTAP_STORAGE_KEY_CONFIG (4)
+// and no CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS (5) items
+TEST_F(CtapConfigTest, StorageWithoutConfigItemsLoadsDefaults) {
+	// {1: h'00..', 2: {"id": "a.b"}, 3: {"id": h'01'}, 4: [{"alg": -7, "type": "public-key"}], 7: {"rk": true}}
+	auto params = hex::bytes<
+		"a5"
+		"  01 5820 0000000000000000000000000000000000000000000000000000000000000000"
+		"  02 a1 62 6964 63 612e62"
+		"  03 a1 62 6964 41 01"
+		"  04 81 a2 63 616c67 26 64 74797065 6a 7075626c69632d6b6579"
+		"  07 a1 62 726b f5"
+	>();
+	request(CTAP_CMD_MAKE_CREDENTIAL, std::vector<uint8_t>(params.begin(), params.end()));
+	ASSERT_EQ(status, CTAP2_OK);
+	config_unauthenticated(CTAP_authenticatorConfig_subCmd_setMinPINLength, rp_ids_params({"a.b"}));
+	ASSERT_EQ(status, CTAP2_OK);
+	set_pin(6);
+	std::fill(std::begin(ctap.pin_state.pin_hash), std::end(ctap.pin_state.pin_hash), 0x5a);
+	ctap_update_pin_persistent_state(&ctap);
+	ctap.config_state.flags = CTAP_CONFIG_flags_always_uv
+		| CTAP_CONFIG_flags_force_pin_change
+		| CTAP_CONFIG_flags_pin_complexity_policy;
+	ASSERT_TRUE(ctap_update_config_persistent_state(&ctap));
+	ctap_init(&ctap);
+	ASSERT_TRUE(ctap_is_always_uv(&ctap));
+	ASSERT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 1u);
+	// drop items 4 and 5 (what an old fido.bin looks like)
+	for (const uint32_t key : {CTAP_STORAGE_KEY_CONFIG, CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS}) {
+		ctap_storage_item_t item{.key = key};
+		ASSERT_EQ(storage.find_item(&storage, &item), CTAP_STORAGE_OK);
+		ASSERT_EQ(storage.delete_item(&storage, item.handle), CTAP_STORAGE_OK);
+		ctap_storage_item_t again{.key = key};
+		ASSERT_EQ(storage.find_item(&storage, &again), CTAP_STORAGE_ITEM_NOT_FOUND);
+	}
+	ctap_init(&ctap);
+	EXPECT_FALSE(ctap_is_always_uv(&ctap));
+	EXPECT_FALSE(ctap_is_force_pin_change(&ctap));
+	EXPECT_FALSE(ctap_is_pin_complexity_policy(&ctap));
+	EXPECT_EQ(ctap_get_long_touch_for_reset_ms(&ctap), 0u);
+	EXPECT_EQ(ctap_get_pin_min_code_point_length(&ctap), 4);
+	EXPECT_EQ(ctap_min_pin_length_rp_ids_count(&ctap), 0u);
+	// the PIN is as it was
+	EXPECT_TRUE(ctap_is_pin_set(&ctap));
+	EXPECT_EQ(ctap.pin_state.pin_code_point_length, 6);
+	EXPECT_EQ(ctap.pin_state.pin_total_remaining_attempts, CTAP_PIN_TOTAL_ATTEMPTS);
+	const std::vector<uint8_t> pin_hash(std::begin(ctap.pin_state.pin_hash), std::end(ctap.pin_state.pin_hash));
+	EXPECT_EQ(pin_hash, std::vector<uint8_t>(sizeof(ctap.pin_state.pin_hash), 0x5a));
+	EXPECT_EQ(get_info_option("alwaysUv"), std::optional<bool>(false));
+	EXPECT_FALSE(get_info_bool(CTAP_authenticatorGetInfo_res_forcePINChange));
+	// and so is the credential: {1: "a.b", 2: h'00..'}
+	auto get_assertion = hex::bytes<
+		"a2"
+		"  01 63 612e62"
+		"  02 5820 0000000000000000000000000000000000000000000000000000000000000000"
+	>();
+	request(CTAP_CMD_GET_ASSERTION, std::vector<uint8_t>(get_assertion.begin(), get_assertion.end()));
+	EXPECT_EQ(status, CTAP2_OK);
 }
 
 // the weak default policy (a platform may replace it)

@@ -38,7 +38,7 @@ static size_t count_unicode_code_points_in_utf8_string(const uint8_t *str, const
 
 }
 
-static void update_persistent_pin_state(ctap_state_t *state) {
+static bool update_persistent_pin_state(ctap_state_t *state) {
 	const ctap_storage_t *const storage = state->storage;
 	ctap_storage_item_t item = {
 		.handle = state->pin_state_item_handle,
@@ -49,10 +49,11 @@ static void update_persistent_pin_state(ctap_state_t *state) {
 	if (storage->create_or_update_item(storage, &item) == CTAP_STORAGE_OK) {
 		debug_log("created or updated pin_state in the storage" nl);
 		state->pin_state_item_handle = item.handle;
-	} else {
-		error_log(red("creating or updating pin_state in the storage failed") nl);
-		// TODO: propagate error
+		return true;
 	}
+	error_log(red("creating or updating pin_state in the storage failed") nl);
+	// TODO: propagate error (only ctap_update_pin_persistent_state() does)
+	return false;
 }
 
 LION_ATTR_WEAK bool ctap_pin_meets_complexity_policy(const uint8_t *pin, size_t pin_length) {
@@ -177,8 +178,8 @@ void ctap_init_persistent_pin_uv_auth_tokens(ctap_state_t *state) {
 	state->persistent_pin_uv_auth_tokens_ready = false;
 }
 
-void ctap_update_pin_persistent_state(ctap_state_t *state) {
-	update_persistent_pin_state(state);
+bool ctap_update_pin_persistent_state(ctap_state_t *state) {
+	return update_persistent_pin_state(state);
 }
 
 static void decrement_pin_remaining_attempts(ctap_state_t *state) {

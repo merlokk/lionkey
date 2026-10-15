@@ -167,25 +167,9 @@ static uint8_t config_set_min_pin_length(ctap_state_t *const state, const CTAP_a
 	const bool force = force_change_pin
 		|| (ctap_is_pin_set(state) && state->pin_state.pin_code_point_length < new_min);
 
-	// persist the new minimum
-	if (new_min != current_min) {
-		state->pin_state.pin_min_code_point_length = new_min;
-		ctap_update_pin_persistent_state(state);
-	}
-
-	if (enable_pin_complexity_policy) {
-		uint8_t ret;
-		ctap_check(set_config_flags(state, CTAP_CONFIG_flags_pin_complexity_policy, 0u));
-	}
-
-	if (force) {
-		uint8_t ret;
-		ctap_check(set_config_flags(state, CTAP_CONFIG_flags_force_pin_change, 0u));
-		// 7. resetPersistentPinUvAuthToken() and
-		//    resetPinUvAuthToken() for all pinUvAuthProtocols supported by this authenticator.
-		ctap_reset_persistent_pin_uv_auth_tokens(state);
-		ctap_all_pin_protocols_reset_pin_uv_auth_token(state);
-	}
+	// The writes: the list first (the only one the spec expects to fail: KEY_STORE_FULL,
+	// nothing changed yet), then the minimum, then the flags in one write. A later storage
+	// error leaves the earlier writes in place, but never the flags without the minimum.
 
 	// 8. If minPinLengthRPIDs is present and contains at least one string:
 	//    2. + 3. no pre-configured list: the given list replaces the previously added one.
@@ -210,6 +194,31 @@ static uint8_t config_set_min_pin_length(ctap_state_t *const state, const CTAP_a
 		if (storage->create_or_update_item(storage, &item) != CTAP_STORAGE_OK) {
 			return CTAP2_ERR_KEY_STORE_FULL;
 		}
+	}
+
+	// persist the new minimum
+	if (new_min != current_min) {
+		state->pin_state.pin_min_code_point_length = new_min;
+		if (!ctap_update_pin_persistent_state(state)) {
+			state->pin_state.pin_min_code_point_length = current_min;
+			return CTAP1_ERR_OTHER;
+		}
+	}
+
+	const uint8_t flags = (uint8_t) (
+		(enable_pin_complexity_policy ? CTAP_CONFIG_flags_pin_complexity_policy : 0u)
+		| (force ? CTAP_CONFIG_flags_force_pin_change : 0u)
+	);
+	if (flags != 0u) {
+		uint8_t ret;
+		ctap_check(set_config_flags(state, flags, 0u));
+	}
+
+	if (force) {
+		// 7. resetPersistentPinUvAuthToken() and
+		//    resetPinUvAuthToken() for all pinUvAuthProtocols supported by this authenticator.
+		ctap_reset_persistent_pin_uv_auth_tokens(state);
+		ctap_all_pin_protocols_reset_pin_uv_auth_token(state);
 	}
 
 	return CTAP2_OK;

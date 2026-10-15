@@ -417,8 +417,8 @@ uint8_t ctap_config(ctap_state_t *state, CborValue *it, CborEncoder *encoder);
 // the crypto table has Ed25519 (COSE EdDSA -8 and Ed25519 -19 are then supported)
 bool ctap_crypto_supports_eddsa(const ctap_crypto_t *crypto);
 
-// persists state->pin_state
-void ctap_update_pin_persistent_state(ctap_state_t *state);
+// persists state->pin_state; false on a storage error
+bool ctap_update_pin_persistent_state(ctap_state_t *state);
 
 // loads the persistentPinUvAuthTokens if there are any (ctap_init())
 void ctap_init_persistent_pin_uv_auth_tokens(ctap_state_t *state);
