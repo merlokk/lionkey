@@ -150,14 +150,21 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 		encoder,
 		&map,
 		16 + (pin_complexity_policy_url ? 1 : 0) + (encrypted_members ? 2 : 0)
+			+ (state->built_in_uv != CTAP_BUILT_IN_UV_NONE ? 1 : 0)
 	));
 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_versions));
 	{
 		CborEncoder array;
-		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 2));
+		// U2F_V2: the platform routes U2F raw messages to ctap1_request();
+		// FIDO_2_3 covers CTAP 2.2 too (there is no FIDO_2_2 version string)
+		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 3 + (state->ctap1_supported ? 1 : 0)));
+		if (state->ctap1_supported) {
+			cbor_encoding_check(cbor_encode_text_string(&array, "U2F_V2", 6));
+		}
 		cbor_encoding_check(cbor_encode_text_string(&array, "FIDO_2_0", 8));
 		cbor_encoding_check(cbor_encode_text_string(&array, "FIDO_2_1", 8));
+		cbor_encoding_check(cbor_encode_text_string(&array, "FIDO_2_3", 8));
 		cbor_encoding_check(cbor_encoder_close_container(&map, &array));
 	}
 
@@ -182,7 +189,8 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_options));
 	{
 		CborEncoder options;
-		cbor_encoding_check(cbor_encoder_create_map(&map, &options, 11));
+		const bool uv_option = state->built_in_uv != CTAP_BUILT_IN_UV_NONE;
+		cbor_encoding_check(cbor_encoder_create_map(&map, &options, 11 + (uv_option ? 1 : 0)));
 
 		// keys in the CTAP2 canonical CBOR order: shorter first, then bytewise
 
@@ -193,6 +201,12 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 		// capable of testing user presence (this is the default, so we could omit it)
 		cbor_encoding_check(cbor_encode_text_string(&options, "up", 2));
 		cbor_encoding_check(cbor_encode_boolean(&options, true));
+
+		// built-in user verification: absent = none, false = supported but not configured
+		if (uv_option) {
+			cbor_encoding_check(cbor_encode_text_string(&options, "uv", 2));
+			cbor_encoding_check(cbor_encode_boolean(&options, state->built_in_uv == CTAP_BUILT_IN_UV_CONFIGURED));
+		}
 
 		// not attached to platform (this is the default, so we could omit it)
 		cbor_encoding_check(cbor_encode_text_string(&options, "plat", 4));
@@ -319,6 +333,12 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// maxRPIDsForSetMinPINLength (0x10): MUST be present iff setMinPINLength is supported
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_maxRPIDsForSetMinPINLength));
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_MAX_MIN_PIN_LENGTH_RP_IDS));
+
+	// uvModality (0x12): the built-in UV method (FIDO UVM bits)
+	if (state->built_in_uv != CTAP_BUILT_IN_UV_NONE) {
+		cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_uvModality));
+		cbor_encoding_check(cbor_encode_uint(&map, state->uv_modality));
+	}
 
 	// attestationFormats (0x16, CTAP 2.2): "none" is implied and MUST NOT be listed
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_attestationFormats));

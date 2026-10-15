@@ -542,6 +542,16 @@ uint8_t ctap_client_pin_change_pin(
 
 }
 
+static uint8_t issue_pin_uv_auth_token(
+	ctap_state_t *state,
+	ctap_pin_protocol_t *pin_protocol,
+	const uint8_t *shared_secret,
+	uint32_t permissions,
+	const CTAP_rpId *rp_id,
+	bool user_is_present,
+	CborEncoder *encoder
+);
+
 static uint8_t get_pin_token_using_pin_with_permissions(
 	ctap_state_t *const state,
 	ctap_pin_protocol_t *const pin_protocol,
@@ -579,6 +589,22 @@ static uint8_t get_pin_token_using_pin_with_permissions(
 		return force_pin_change_error;
 	}
 
+	return issue_pin_uv_auth_token(state, pin_protocol, shared_secret, permissions, rp_id, false, encoder);
+
+}
+
+// The token after a successful PIN or built-in UV check: the persistentPinUvAuthToken for pcmr,
+// else a new pinUvAuthToken with the permissions (and RP ID); encrypt(shared secret, token).
+static uint8_t issue_pin_uv_auth_token(
+	ctap_state_t *const state,
+	ctap_pin_protocol_t *const pin_protocol,
+	const uint8_t *const shared_secret,
+	const uint32_t permissions,
+	const CTAP_rpId *const rp_id,
+	const bool user_is_present,
+	CborEncoder *encoder
+) {
+
 	// CTAP 2.2: pcmr (alone, see the caller) goes to the persistentPinUvAuthToken, which is returned;
 	// the pinUvAuthToken is left as it is
 	const bool persistent = permissions == CTAP_clientPIN_pinUvAuthToken_permission_pcmr;
@@ -601,8 +627,9 @@ static uint8_t get_pin_token_using_pin_with_permissions(
 	// (I.e. all existing pinUvAuthTokens are invalidated.)
 	ctap_all_pin_protocols_reset_pin_uv_auth_token(state);
 
-	// Call beginUsingPinUvAuthToken(userIsPresent: false).
-	ctap_pin_uv_auth_token_begin_using(state, false, permissions);
+	// Call beginUsingPinUvAuthToken(userIsPresent): false for a PIN,
+	// true for a built-in UV that showed the user was there.
+	ctap_pin_uv_auth_token_begin_using(state, user_is_present, permissions);
 	// If the rpId parameter is present, associate the permissions RP ID with the pinUvAuthToken.
 	if (rp_id != NULL) {
 		ctap_compute_rp_id_hash(state->crypto, state->pin_uv_auth_token_state.rpId_hash, rp_id);
@@ -802,6 +829,110 @@ uint8_t ctap_client_pin_get_pin_uv_auth_token_using_pin_with_permissions(
 
 }
 
+LION_ATTR_WEAK ctap_user_presence_result_t ctap_perform_built_in_uv(void) {
+	return CTAP_UP_RESULT_DENY;
+}
+
+LION_ATTR_WEAK void ctap_on_built_in_uv_request(const ctap_built_in_uv_t built_in_uv) {
+	lion_unused(built_in_uv);
+}
+
+static uint8_t uv_retries(const ctap_state_t *const state) {
+	const uint8_t failures = state->config_state.uv_failures;
+	return failures >= CTAP_UV_MAX_RETRIES ? 0 : (uint8_t) (CTAP_UV_MAX_RETRIES - failures);
+}
+
+static void set_uv_failures(ctap_state_t *const state, const uint8_t failures) {
+	if (state->config_state.uv_failures != failures) {
+		state->config_state.uv_failures = failures;
+		ctap_update_config_persistent_state(state);
+	}
+}
+
+// 6.5.5.7.3. Getting pinUvAuthToken using getPinUvAuthTokenUsingUvWithPermissions (built-in user verification)
+static uint8_t ctap_client_pin_get_pin_uv_auth_token_using_uv_with_permissions(
+	ctap_state_t *const state,
+	ctap_pin_protocol_t *const pin_protocol,
+	const CTAP_clientPIN *const cp,
+	CborEncoder *const encoder
+) {
+
+	ctap_on_built_in_uv_request(state->built_in_uv);
+
+	// 1. mandatory parameters (pinUvAuthProtocol is checked by the caller)
+	const uint32_t mandatory_params =
+		ctap_param_to_mask(CTAP_clientPIN_keyAgreement) |
+		ctap_param_to_mask(CTAP_clientPIN_permissions);
+	if (!ctap_is_present(cp->present, mandatory_params)) {
+		return CTAP2_ERR_MISSING_PARAMETER;
+	}
+	// 3. permissions 0
+	if (cp->permissions == 0) {
+		return CTAP1_ERR_INVALID_PARAMETER;
+	}
+	// mc and ga need an RP ID (as with the PIN)
+	const bool rpId_required = ctap_permissions_include_any_of(
+		cp->permissions,
+		CTAP_clientPIN_pinUvAuthToken_permission_mc | CTAP_clientPIN_pinUvAuthToken_permission_ga
+	);
+	const bool rpId_present = ctap_param_is_present(cp, CTAP_clientPIN_rpId);
+	if (rpId_required && !rpId_present) {
+		return CTAP1_ERR_INVALID_PARAMETER;
+	}
+	// 4. be (no uvBioEnroll), lbw (no largeBlobs), acfg (no uvAcfg); pcmr only alone
+	if ((
+		ctap_permissions_include_any_of(
+			cp->permissions,
+			CTAP_clientPIN_pinUvAuthToken_permission_be
+			| CTAP_clientPIN_pinUvAuthToken_permission_lbw
+			| CTAP_clientPIN_pinUvAuthToken_permission_acfg
+		)
+		|| (
+			ctap_permissions_include_any_of(cp->permissions, CTAP_clientPIN_pinUvAuthToken_permission_pcmr)
+			&& cp->permissions != CTAP_clientPIN_pinUvAuthToken_permission_pcmr
+		)
+	)) {
+		return CTAP2_ERR_UNAUTHORIZED_PERMISSION;
+	}
+	// 5. supported but not configured
+	if (state->built_in_uv != CTAP_BUILT_IN_UV_CONFIGURED) {
+		return CTAP2_ERR_NOT_ALLOWED;
+	}
+	// 7. no retries left
+	if (uv_retries(state) == 0) {
+		return CTAP2_ERR_UV_BLOCKED;
+	}
+
+	uint8_t shared_secret[pin_protocol->shared_secret_length];
+	if (pin_protocol->decapsulate(pin_protocol, &cp->keyAgreement, shared_secret) != 0) {
+		return CTAP1_ERR_INVALID_PARAMETER;
+	}
+
+	// 9. + 10. performBuiltInUv (preferredPlatformUvAttempts absent = 1: internal retries)
+	switch (ctap_perform_built_in_uv()) {
+		case CTAP_UP_RESULT_ALLOW:
+			set_uv_failures(state, 0);
+			break;
+		case CTAP_UP_RESULT_TIMEOUT:
+			return CTAP2_ERR_USER_ACTION_TIMEOUT;
+		case CTAP_UP_RESULT_CANCEL:
+			return CTAP2_ERR_KEEPALIVE_CANCEL;
+		case CTAP_UP_RESULT_DENY:
+		default:
+			set_uv_failures(state, (uint8_t) (state->config_state.uv_failures + 1));
+			return uv_retries(state) == 0 ? CTAP2_ERR_UV_BLOCKED : CTAP2_ERR_UV_INVALID;
+	}
+
+	// 11. - 15.
+	return issue_pin_uv_auth_token(
+		state, pin_protocol, shared_secret, cp->permissions,
+		rpId_present ? &cp->rpId : NULL,
+		true,
+		encoder
+	);
+
+}
+
 uint8_t ctap_get_pin_protocol(ctap_state_t *state, size_t protocol_version, ctap_pin_protocol_t **pin_protocol) {
 	debug_log("ctap_get_pin_protocol: protocol_version=%" PRIsz nl, protocol_version);
 	const size_t max_protocol_version = sizeof(state->pin_protocols) / sizeof(ctap_pin_protocol_t);
@@ -872,10 +1003,26 @@ uint8_t ctap_client_pin(ctap_state_t *const state, CborValue *const it, CborEnco
 			return ctap_client_pin_get_pin_token(state, pin_protocol, &cp, encoder);
 
 		case CTAP_clientPIN_subCmd_getPinUvAuthTokenUsingUvWithPermissions:
+			// only with built-in user verification (the uv option in the authenticatorGetInfo response)
+			if (state->built_in_uv == CTAP_BUILT_IN_UV_NONE) {
+				return CTAP2_ERR_INVALID_SUBCOMMAND;
+			}
+			debug_log(magenta("CTAP_clientPIN_subCmd_getPinUvAuthTokenUsingUvWithPermissions") nl);
+			return ctap_client_pin_get_pin_uv_auth_token_using_uv_with_permissions(state, pin_protocol, &cp, encoder);
+
 		case CTAP_clientPIN_subCmd_getUVRetries:
-			// not applicable because we currently don't support any built-in user verification methods
-			// (see the uv option in the authenticatorGetInfo response)
-			return CTAP2_ERR_INVALID_SUBCOMMAND;
+			if (state->built_in_uv == CTAP_BUILT_IN_UV_NONE) {
+				return CTAP2_ERR_INVALID_SUBCOMMAND;
+			}
+			debug_log(magenta("CTAP_clientPIN_subCmd_getUVRetries") nl);
+			// start response map
+			cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 1));
+			// 5. uvRetries
+			cbor_encoding_check(cbor_encode_int(&map, CTAP_clientPIN_res_uvRetries));
+			cbor_encoding_check(cbor_encode_int(&map, uv_retries(state)));
+			// close response map
+			cbor_encoding_check(cbor_encoder_close_container(encoder, &map));
+			return CTAP2_OK;
 
 		case CTAP_clientPIN_subCmd_getPinUvAuthTokenUsingPinWithPermissions:
 			debug_log(magenta("CTAP_clientPIN_subCmd_getPinUvAuthTokenUsingPinWithPermissions") nl);

@@ -82,8 +82,19 @@ static_assert(
 #define CTAP_CONFIG_flags_pin_complexity_policy  (1u << 3)
 typedef struct LION_ATTR_PACKED ctap_config_persistent_state {
 	uint8_t flags;
-	uint8_t reserved[3];
+	// built-in UV: failed attempts since the last success (uvRetries = CTAP_UV_MAX_RETRIES - this)
+	uint8_t uv_failures;
+	uint8_t reserved[2];
 } ctap_config_persistent_state_t;
+
+// built-in user verification (getInfo "uv"); set by the platform
+typedef enum ctap_built_in_uv {
+	CTAP_BUILT_IN_UV_NONE = 0,            // no "uv" option: not supported
+	CTAP_BUILT_IN_UV_NOT_CONFIGURED = 1,  // "uv": false: supported, not set up yet
+	CTAP_BUILT_IN_UV_CONFIGURED = 2,      // "uv": true
+} ctap_built_in_uv_t;
+
+#define CTAP_UV_MAX_RETRIES 8
 static_assert(
 	sizeof(ctap_config_persistent_state_t) == 4,
 	"sizeof(ctap_config_persistent_state_t) == 4"
@@ -184,6 +195,15 @@ typedef struct ctap_state {
 	// The policy itself: ctap_pin_meets_complexity_policy().
 	// Set by the platform; ctap_init() leaves it as it is.
 	bool pin_complexity_policy_preconfigured;
+	// built-in user verification (getPinUvAuthTokenUsingUvWithPermissions, getUVRetries) and its
+	// uvModality (getInfo 0x12, FIDO UVM bits, e.g. 0x04 passcode internal); set by the platform
+	ctap_built_in_uv_t built_in_uv;
+	uint32_t uv_modality;
+
+	// the transport passes U2F raw messages to ctap1_request() (getInfo versions: U2F_V2);
+	// set by the platform
+	bool ctap1_supported;
+
 	// pinComplexityPolicyURL (getInfo 0x1C): where the platform can tell the user about the policy;
 	// NULL = absent. Set by the platform.
 	const char *pin_complexity_policy_url;
@@ -296,6 +316,21 @@ ctap_user_presence_result_t ctap_wait_for_user_presence(void);
  * @param pin_length its length in bytes
  */
 bool ctap_pin_meets_complexity_policy(const uint8_t *pin, size_t pin_length);
+
+/**
+ * Built-in user verification on the authenticator (e.g. a PIN typed on its own keyboard / screen),
+ * for getPinUvAuthTokenUsingUvWithPermissions with built_in_uv == CTAP_BUILT_IN_UV_CONFIGURED.
+ * ALLOW: verified (and the user was present); DENY: not verified (counts against uvRetries);
+ * TIMEOUT / CANCEL as for user presence.
+ * The weak default (ctap_pin.c) answers DENY.
+ */
+ctap_user_presence_result_t ctap_perform_built_in_uv(void);
+
+/**
+ * Told about every getPinUvAuthTokenUsingUvWithPermissions (before anything is checked against the
+ * built-in UV state), e.g. for a log. The weak default does nothing.
+ */
+void ctap_on_built_in_uv_request(ctap_built_in_uv_t built_in_uv);
 
 // CTAP 2.3: the sustained touch that longTouchForReset asks for
 #define CTAP_LONG_TOUCH_FOR_RESET_MS 5000
