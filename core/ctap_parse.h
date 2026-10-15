@@ -275,6 +275,7 @@ static_assert(
 #define CTAP_extension_hmac_secret   (1u << 1)
 #define CTAP_extension_minPinLength  (1u << 2)
 #define CTAP_extension_pinComplexityPolicy  (1u << 3)
+#define CTAP_extension_hmac_secret_mc  (1u << 4)
 // 12.1. Credential Protection (credProtect)
 // https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#sctn-credProtect-extension
 #define CTAP_extension_credProtect_1_userVerificationOptional                      0x01
@@ -337,6 +338,8 @@ typedef struct CTAP_makeCredential {
 	CborValue excludeList;
 	// extensions-specific:
 	uint8_t credProtect;
+	// hmac-secret-mc (CTAP 2.2): the same input as getAssertion's hmac-secret
+	CTAP_getAssertion_hmac_secret hmac_secret_mc;
 } CTAP_makeCredential;
 // On success, the authenticator returns the following authenticatorMakeCredential response structure
 // which contains an attestation object plus additional information.

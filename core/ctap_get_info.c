@@ -62,9 +62,10 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_extensions));
 	{
 		CborEncoder array;
-		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 3 + (pin_complexity_policy ? 1 : 0)));
+		cbor_encoding_check(cbor_encoder_create_array(&map, &array, 4 + (pin_complexity_policy ? 1 : 0)));
 		cbor_encoding_check(cbor_encode_text_string(&array, "credProtect", 11));
 		cbor_encoding_check(cbor_encode_text_string(&array, "hmac-secret", 11));
+		cbor_encoding_check(cbor_encode_text_string(&array, "hmac-secret-mc", 14));
 		cbor_encoding_check(cbor_encode_text_string(&array, "minPinLength", 12));
 		// MUST be listed while the PIN complexity policy is enabled
 		if (pin_complexity_policy) {

@@ -513,6 +513,8 @@ static uint8_t parse_mc_ga_options(
 
 }
 
+static uint8_t parse_get_assertion_hmac_secret_extension(CborValue *it, CTAP_getAssertion_hmac_secret *params);
+
 static uint8_t parse_make_credential_extensions(CborValue *it, CTAP_makeCredential *mc) {
 
 	CTAP_mc_ga_common *const params = &mc->common;
@@ -547,6 +549,13 @@ static uint8_t parse_make_credential_extensions(CborValue *it, CTAP_makeCredenti
 				params->extensions_present |= CTAP_extension_minPinLength;
 			}
 			cbor_decoding_check(cbor_value_advance_fixed(&map));
+
+		} else if (ctap_string_matches(&key, &ctap_str("hmac-secret-mc"))) {
+
+			// 12.7. HMAC Secret MakeCredential Extension (hmac-secret-mc), CTAP 2.2
+			debug_log("hmac-secret-mc" nl);
+			ctap_check(parse_get_assertion_hmac_secret_extension(&map, &mc->hmac_secret_mc));
+			params->extensions_present |= CTAP_extension_hmac_secret_mc;
 
 		} else if (ctap_string_matches(&key, &ctap_str("pinComplexityPolicy"))) {
 
