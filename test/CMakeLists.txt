@@ -108,6 +108,7 @@ target_link_libraries(sha256 PUBLIC hash)
 add_library(ctap_crypto_software STATIC)
 target_sources(ctap_crypto_software PUBLIC
 		../core/ctap_crypto_software.c
+		../core/ctap_aes128_software.c
 )
 target_include_directories(ctap_crypto_software PUBLIC ../core)
 add_library(monocypher STATIC)

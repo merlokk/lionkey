@@ -388,6 +388,10 @@ void ctap_update_pin_persistent_state(ctap_state_t *state);
 // loads the persistentPinUvAuthTokens if there are any (ctap_init())
 void ctap_init_persistent_pin_uv_auth_tokens(ctap_state_t *state);
 
+// getInfo encIdentifier: the 128-bit device identifier, made (and stored) if there is none yet;
+// false if it cannot be made
+bool ctap_ensure_device_identifier(ctap_state_t *state);
+
 // resetPersistentPinUvAuthToken() for every protocol: the tokens are dropped
 // (fresh ones are made at the next pcmr request), no permissions
 void ctap_reset_persistent_pin_uv_auth_tokens(ctap_state_t *state);

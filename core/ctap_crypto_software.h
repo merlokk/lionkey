@@ -22,6 +22,7 @@ typedef struct ctap_software_crypto_context {
         .ecc_secp256r1_shared_secret = ctap_software_crypto_ecc_secp256r1_shared_secret, \
         .aes_256_cbc_encrypt = ctap_software_crypto_aes_256_cbc_encrypt, \
         .aes_256_cbc_decrypt = ctap_software_crypto_aes_256_cbc_decrypt, \
+        .aes_128_cbc_encrypt = ctap_software_crypto_aes_128_cbc_encrypt, \
         .sha256_bind_ctx = ctap_software_crypto_sha256_bind_ctx, \
         .sha256_compute_digest = ctap_software_crypto_sha256_compute_digest, \
         .sha256 = &hash_alg_sha256, \
@@ -41,6 +42,15 @@ ctap_crypto_status_t ctap_software_crypto_rng_generate_data(
 	const ctap_crypto_t *crypto,
 	uint8_t *buffer,
 	size_t length
+);
+
+// ctap_aes128_software.c
+ctap_crypto_status_t ctap_software_crypto_aes_128_cbc_encrypt(
+	const ctap_crypto_t *crypto,
+	const uint8_t *iv,
+	const uint8_t *key,
+	uint8_t *data,
+	size_t data_length
 );
 
 ctap_crypto_status_t ctap_software_crypto_ed25519_compute_public_key(

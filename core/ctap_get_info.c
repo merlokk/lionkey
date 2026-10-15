@@ -1,5 +1,88 @@
 #include <string.h>
 #include "ctap.h"
+#include "ctap_credentials_store.h"
+#include <hkdf.h>
+
+bool ctap_ensure_device_identifier(ctap_state_t *const state) {
+	const ctap_storage_t *const storage = state->storage;
+	ctap_storage_item_t item = {
+		.key = CTAP_STORAGE_KEY_DEVICE_IDENTIFIER,
+	};
+	if (storage->find_item(storage, &item) == CTAP_STORAGE_OK && item.size == 16) {
+		return true;
+	}
+	uint8_t identifier[16];
+	if (state->crypto->rng_generate_data(state->crypto, identifier, sizeof(identifier)) != CTAP_CRYPTO_OK) {
+		return false;
+	}
+	item.handle = 0;
+	item.key = CTAP_STORAGE_KEY_DEVICE_IDENTIFIER;
+	item.size = sizeof(identifier);
+	item.data = identifier;
+	return storage->create_or_update_item(storage, &item) == CTAP_STORAGE_OK;
+}
+
+// the device identifier (16 bytes); false: none
+static bool get_device_identifier(const ctap_state_t *const state, uint8_t *identifier) {
+	const ctap_storage_t *const storage = state->storage;
+	ctap_storage_item_t item = {
+		.key = CTAP_STORAGE_KEY_DEVICE_IDENTIFIER,
+	};
+	if (storage->find_item(storage, &item) != CTAP_STORAGE_OK || item.size != 16) {
+		return false;
+	}
+	memcpy(identifier, item.data, 16);
+	return true;
+}
+
+// The credential store state: LEFT(SHA-256 over every stored credential, 16). Changes whenever a
+// credential is created, deleted or updated; the same otherwise (nothing extra stored).
+static bool get_credential_store_state(const ctap_state_t *const state, uint8_t *store_state) {
+	const ctap_crypto_t *const crypto = state->crypto;
+	const hash_alg_t *const sha256 = crypto->sha256;
+	uint8_t sha256_ctx[sha256->ctx_size];
+	crypto->sha256_bind_ctx(crypto, sha256_ctx);
+	sha256->init(sha256_ctx);
+	const ctap_storage_t *const storage = state->storage;
+	ctap_storage_item_t item = {
+		.key = CTAP_STORAGE_KEY_CREDENTIAL,
+	};
+	while (storage->find_item(storage, &item) == CTAP_STORAGE_OK) {
+		sha256->update(sha256_ctx, item.data, item.size);
+	}
+	uint8_t hash[CTAP_SHA256_HASH_SIZE];
+	sha256->final(sha256_ctx, hash);
+	memcpy(store_state, hash, 16);
+	return true;
+}
+
+// CTAP 2.2 getInfo encIdentifier / encCredStoreState:
+// iv || AES-128-CBC(HKDF-SHA-256(salt = 32 zero bytes, IKM = persistentPinUvAuthToken, L = 16, info), iv, plaintext)
+static uint8_t encrypt_get_info_member(
+	ctap_state_t *const state,
+	const char *const info,
+	const uint8_t *const plaintext,
+	uint8_t *const out
+) {
+	const ctap_crypto_t *const crypto = state->crypto;
+	const hash_alg_t *const sha256 = crypto->sha256;
+	uint8_t sha256_ctx[sha256->ctx_size];
+	crypto->sha256_bind_ctx(crypto, sha256_ctx);
+	static const uint8_t zero_salt[32] = {0};
+	uint8_t key[16];
+	hkdf(
+		sha256, sha256_ctx,
+		zero_salt, sizeof(zero_salt),
+		state->pin_protocols[0].persistent_pin_uv_auth_token, CTAP_PIN_UV_AUTH_TOKEN_SIZE,
+		(const uint8_t *) info, strlen(info),
+		sizeof(key), key
+	);
+	ctap_crypto_check(crypto->rng_generate_data(crypto, out, 16)); // a fresh iv for every getInfo
+	memcpy(&out[16], plaintext, 16);
+	const ctap_crypto_status_t status = crypto->aes_128_cbc_encrypt(crypto, out, key, &out[16], 16);
+	memset(key, 0, sizeof(key));
+	return status == CTAP_CRYPTO_OK ? CTAP2_OK : CTAP1_ERR_OTHER;
+}
 
 // in the order of preference (getInfo algorithms); the EdDSA ones only with Ed25519 in the crypto table
 static const COSEAlgorithmIdentifier ctap_supported_pub_key_cred_alg[] = {
@@ -48,7 +131,26 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	// (pinComplexityPolicyURL), authenticatorConfigCommands
 	const bool pin_complexity_policy = ctap_is_pin_complexity_policy(state);
 	const bool pin_complexity_policy_url = state->pin_complexity_policy_url != NULL;
-	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 16 + (pin_complexity_policy_url ? 1 : 0)));
+	// encIdentifier and encCredStoreState: only with a persistentPinUvAuthToken to encrypt them with
+	uint8_t enc_identifier[32];
+	uint8_t enc_cred_store_state[32];
+	bool encrypted_members = false;
+	if (state->persistent_pin_uv_auth_tokens_ready && state->crypto->aes_128_cbc_encrypt != NULL) {
+		uint8_t plaintext[16];
+		uint8_t ret;
+		if (get_device_identifier(state, plaintext)) {
+			ctap_check(encrypt_get_info_member(state, "encIdentifier", plaintext, enc_identifier));
+			get_credential_store_state(state, plaintext);
+			ctap_check(encrypt_get_info_member(state, "encCredStoreState", plaintext, enc_cred_store_state));
+			encrypted_members = true;
+		}
+		memset(plaintext, 0, sizeof(plaintext));
+	}
+	cbor_encoding_check(cbor_encoder_create_map(
+		encoder,
+		&map,
+		16 + (pin_complexity_policy_url ? 1 : 0) + (encrypted_members ? 2 : 0)
+	));
 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_versions));
 	{
@@ -232,6 +334,12 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_longTouchForReset));
 	cbor_encoding_check(cbor_encode_boolean(&map, ctap_get_long_touch_for_reset_ms(state) != 0u));
 
+	// encIdentifier (0x19, CTAP 2.2): the device identifier, readable with the persistentPinUvAuthToken
+	if (encrypted_members) {
+		cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_encIdentifier));
+		cbor_encoding_check(cbor_encode_byte_string(&map, enc_identifier, sizeof(enc_identifier)));
+	}
+
 	// pinComplexityPolicy (0x1B): whether an additional PIN complexity policy is enforced
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_pinComplexityPolicy));
 	cbor_encoding_check(cbor_encode_boolean(&map, pin_complexity_policy));
@@ -244,6 +352,12 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 			(const uint8_t *) state->pin_complexity_policy_url,
 			strlen(state->pin_complexity_policy_url)
 		));
+	}
+
+	// encCredStoreState (0x1E, CTAP 2.2): changes with every credential change
+	if (encrypted_members) {
+		cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_encCredStoreState));
+		cbor_encoding_check(cbor_encode_byte_string(&map, enc_cred_store_state, sizeof(enc_cred_store_state)));
 	}
 
 	// authenticatorConfigCommands (0x1F, CTAP 2.3): the supported authenticatorConfig subcommands

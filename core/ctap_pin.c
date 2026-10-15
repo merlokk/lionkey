@@ -103,19 +103,26 @@ static void store_persistent_pin_uv_auth_tokens(ctap_state_t *state) {
 }
 
 // fresh persistentPinUvAuthTokens (no permissions), not stored yet
+// The same value for both protocols: getInfo's encIdentifier / encCredStoreState are encrypted with
+// "the" persistentPinUvAuthToken, and getInfo cannot know which protocol the platform got it with.
+// Also makes the device identifier if there is none yet.
 static bool make_persistent_pin_uv_auth_tokens(ctap_state_t *state) {
 	static_assert(sizeof(state->pin_protocols) / sizeof(ctap_pin_protocol_t) == 2, "two PIN/UV auth protocols");
-	for (size_t i = 0; i < 2; ++i) {
-		ctap_pin_protocol_t *const p = &state->pin_protocols[i];
-		if (state->crypto->rng_generate_data(
-			state->crypto, p->persistent_pin_uv_auth_token, sizeof(p->persistent_pin_uv_auth_token)
-		) != CTAP_CRYPTO_OK) {
-			error_log(red("persistentPinUvAuthToken: rng failed") nl);
-			return false;
-		}
+	ctap_pin_protocol_t *const p0 = &state->pin_protocols[0];
+	if (state->crypto->rng_generate_data(
+		state->crypto, p0->persistent_pin_uv_auth_token, sizeof(p0->persistent_pin_uv_auth_token)
+	) != CTAP_CRYPTO_OK) {
+		error_log(red("persistentPinUvAuthToken: rng failed") nl);
+		return false;
 	}
+	memcpy(
+		state->pin_protocols[1].persistent_pin_uv_auth_token,
+		p0->persistent_pin_uv_auth_token,
+		sizeof(p0->persistent_pin_uv_auth_token)
+	);
 	state->persistent_pin_uv_auth_token_permissions = 0u;
 	state->persistent_pin_uv_auth_tokens_ready = true;
+	ctap_ensure_device_identifier(state);
 	return true;
 }
 
@@ -153,6 +160,14 @@ void ctap_init_persistent_pin_uv_auth_tokens(ctap_state_t *state) {
 			);
 		}
 		state->persistent_pin_uv_auth_tokens_ready = true;
+		// made before one token served both protocols (getInfo's encIdentifier needs one): drop them
+		if (memcmp(
+			state->pin_protocols[0].persistent_pin_uv_auth_token,
+			state->pin_protocols[1].persistent_pin_uv_auth_token,
+			CTAP_PIN_UV_AUTH_TOKEN_SIZE
+		) != 0) {
+			ctap_reset_persistent_pin_uv_auth_tokens(state);
+		}
 		return;
 	}
 	for (size_t i = 0; i < 2; ++i) {

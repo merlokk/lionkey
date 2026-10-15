@@ -17,6 +17,8 @@ typedef enum ctap_storage_key {
 	CTAP_STORAGE_KEY_U2F_ATTESTATION = 6,
 	// the persistentPinUvAuthTokens (one per PIN/UV auth protocol) and their permissions
 	CTAP_STORAGE_KEY_PERSISTENT_PUAT = 7,
+	// getInfo encIdentifier: the 128-bit device identifier (random, a reset makes a new one)
+	CTAP_STORAGE_KEY_DEVICE_IDENTIFIER = 8,
 } ctap_storage_key_t;
 
 typedef enum ctap_storage_status {

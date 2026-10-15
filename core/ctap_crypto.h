@@ -133,6 +133,18 @@ typedef struct ctap_crypto {
 		const size_t data_length
 	);
 
+	/**
+	 * Encrypts in place with AES-128 in CBC mode (getInfo encIdentifier / encCredStoreState).
+	 * Optional: NULL leaves those getInfo members out.
+	 */
+	ctap_crypto_status_t (*aes_128_cbc_encrypt)(
+		const struct ctap_crypto *crypto,
+		const uint8_t *iv,
+		const uint8_t *key,
+		uint8_t *data,
+		size_t data_length
+	);
+
 	ctap_crypto_status_t (*sha256_bind_ctx)(
 		const struct ctap_crypto *crypto,
 		void *sha256_ctx
