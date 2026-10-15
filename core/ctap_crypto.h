@@ -68,6 +68,28 @@ typedef struct ctap_crypto {
 		const uint8_t *optional_fixed_k
 	);
 
+	/**
+	 * Ed25519 (RFC 8032): the public key of a private key (the 32-byte seed).
+	 * Optional: NULL when the authenticator does not support EdDSA.
+	 */
+	ctap_crypto_status_t (*ed25519_compute_public_key)(
+		const struct ctap_crypto *crypto,
+		const uint8_t *private_key,
+		uint8_t *public_key
+	);
+
+	/**
+	 * Ed25519 (RFC 8032, PureEdDSA): signs the message itself (not a hash),
+	 * a 64-byte signature. Optional: NULL when the authenticator does not support EdDSA.
+	 */
+	ctap_crypto_status_t (*ed25519_sign)(
+		const struct ctap_crypto *crypto,
+		const uint8_t *private_key,
+		const uint8_t *message,
+		size_t message_size,
+		uint8_t *signature
+	);
+
 	ctap_crypto_status_t (*ecc_secp256r1_shared_secret)(
 		const struct ctap_crypto *crypto,
 		const uint8_t *public_key,

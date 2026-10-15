@@ -1,22 +1,33 @@
 #include <string.h>
 #include "ctap.h"
 
+// in the order of preference (getInfo algorithms); the EdDSA ones only with Ed25519 in the crypto table
 static const COSEAlgorithmIdentifier ctap_supported_pub_key_cred_alg[] = {
-	COSE_ALG_ES256
+	COSE_ALG_ES256,
+	COSE_ALG_EdDSA,
+	COSE_ALG_Ed25519,
 };
 static const size_t ctap_supported_pub_key_cred_alg_count =
 	sizeof(ctap_supported_pub_key_cred_alg) / sizeof(COSEAlgorithmIdentifier);
 
-bool ctap_is_supported_pub_key_cred_alg(const CTAP_credParams *cred_params) {
+static bool alg_available(const COSEAlgorithmIdentifier alg, const bool eddsa_supported) {
+	return alg == COSE_ALG_ES256 || eddsa_supported;
+}
+
+bool ctap_is_supported_pub_key_cred_alg(const CTAP_credParams *cred_params, const bool eddsa_supported) {
 	if (cred_params->type != CTAP_pubKeyCredType_public_key) {
 		return false;
 	}
 	for (size_t i = 0; i < ctap_supported_pub_key_cred_alg_count; ++i) {
 		if (ctap_supported_pub_key_cred_alg[i] == cred_params->alg) {
-			return true;
+			return alg_available(cred_params->alg, eddsa_supported);
 		}
 	}
 	return false;
+}
+
+bool ctap_crypto_supports_eddsa(const ctap_crypto_t *const crypto) {
+	return crypto->ed25519_compute_public_key != NULL && crypto->ed25519_sign != NULL;
 }
 
 const uint8_t ctap_aaguid[CTAP_AAGUID_SIZE] = "\xa8\xa1\x47\x32\x6b\x7d\x12\x0d\xfb\x91\x73\x56\xbc\x18\x98\x03";
@@ -163,9 +174,17 @@ uint8_t ctap_get_info(ctap_state_t *state, CborValue *it, CborEncoder *encoder) 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_authenticatorGetInfo_res_algorithms));
 	{
 		CborEncoder array;
-		cbor_encoding_check(cbor_encoder_create_array(&map, &array, ctap_supported_pub_key_cred_alg_count));
+		const bool eddsa_supported = ctap_crypto_supports_eddsa(state->crypto);
+		size_t count = 0;
+		for (size_t i = 0; i < ctap_supported_pub_key_cred_alg_count; ++i) {
+			count += alg_available(ctap_supported_pub_key_cred_alg[i], eddsa_supported) ? 1 : 0;
+		}
+		cbor_encoding_check(cbor_encoder_create_array(&map, &array, count));
 		for (size_t i = 0; i < ctap_supported_pub_key_cred_alg_count; ++i) {
 			const COSEAlgorithmIdentifier alg = ctap_supported_pub_key_cred_alg[i];
+			if (!alg_available(alg, eddsa_supported)) {
+				continue;
+			}
 			CborEncoder pub_key_cred_param;
 			cbor_encoding_check(cbor_encoder_create_map(&array, &pub_key_cred_param, 2));
 			cbor_encoding_check(cbor_encode_text_string(&pub_key_cred_param, "alg", 3));

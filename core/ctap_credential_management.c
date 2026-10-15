@@ -212,7 +212,7 @@ static uint8_t encode_credential_management_enumerate_credentials_response(
 	ctap_check(ctap_encode_pub_key_cred_desc(&map, &credential_id));
 
 	cbor_encoding_check(cbor_encode_uint(&map, CTAP_credentialManagement_res_publicKey));
-	ctap_check(ctap_encode_public_key(&map, credential_public_key));
+	ctap_check(ctap_encode_public_key(&map, ctap_credential_get_alg(credential), credential_public_key));
 
 	if (num_credentials != 0) {
 		cbor_encoding_check(cbor_encode_uint(&map, CTAP_credentialManagement_res_totalCredentials));

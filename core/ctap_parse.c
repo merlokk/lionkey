@@ -808,7 +808,7 @@ static uint8_t parse_cred_params(CborValue *it, CTAP_credParams *cred_params) {
  * @param mc the parsed makeCredential command parameters from ctap_parse_make_credential
  * @returns a CTAP status code (CTAP2_OK on success)
  */
-uint8_t ctap_parse_make_credential_pub_key_cred_params(CTAP_makeCredential *mc) {
+uint8_t ctap_parse_make_credential_pub_key_cred_params(CTAP_makeCredential *mc, const bool eddsa_supported) {
 
 	uint8_t ret;
 	CborError err;
@@ -830,7 +830,7 @@ uint8_t ctap_parse_make_credential_pub_key_cred_params(CTAP_makeCredential *mc) 
 	for (size_t i = 0; i < array_length; i++) {
 		CTAP_credParams cred_params;
 		ctap_check(parse_cred_params(&array, &cred_params));
-		if (!algorithm_chosen && ctap_is_supported_pub_key_cred_alg(&cred_params)) {
+		if (!algorithm_chosen && ctap_is_supported_pub_key_cred_alg(&cred_params, eddsa_supported)) {
 			mc->pubKeyCredParams_chosen = cred_params;
 			algorithm_chosen = true;
 		}

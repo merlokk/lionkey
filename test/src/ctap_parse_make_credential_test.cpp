@@ -21,8 +21,8 @@ protected:
 		status = ctap_parse_make_credential(&it, &mc);
 	}
 
-	void test_ctap_parse_make_credential_pub_key_cred_params() {
-		status = ctap_parse_make_credential_pub_key_cred_params(&mc);
+	void test_ctap_parse_make_credential_pub_key_cred_params(bool eddsa_supported = true) {
+		status = ctap_parse_make_credential_pub_key_cred_params(&mc, eddsa_supported);
 	}
 
 };
@@ -210,9 +210,15 @@ TEST_F(CtapParseMakeCredentialTest, WebauthnIoTest) {
 
 	EXPECT_EQ(mc.common.pinUvAuthProtocol, 1);
 
+	// webauthn.io lists EdDSA (-8) first: the first supported one is chosen
 	test_ctap_parse_make_credential_pub_key_cred_params();
 	ASSERT_EQ(status, CTAP2_OK);
+	EXPECT_EQ(mc.pubKeyCredParams_chosen.type, CTAP_pubKeyCredType_public_key);
+	EXPECT_EQ(mc.pubKeyCredParams_chosen.alg, COSE_ALG_EdDSA);
 
+	// without Ed25519 in the crypto table: ES256
+	test_ctap_parse_make_credential_pub_key_cred_params(false);
+	ASSERT_EQ(status, CTAP2_OK);
 	EXPECT_EQ(mc.pubKeyCredParams_chosen.type, CTAP_pubKeyCredType_public_key);
 	EXPECT_EQ(mc.pubKeyCredParams_chosen.alg, COSE_ALG_ES256);
 }

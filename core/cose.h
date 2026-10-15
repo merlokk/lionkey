@@ -84,6 +84,8 @@ static_assert(
 // Edwards-Curve Digital Signature Algorithm (EdDSA)
 // https://datatracker.ietf.org/doc/html/rfc9053#name-edwards-curve-digital-signa
 #define COSE_ALG_EdDSA             (-8)
+// RFC 9864: Ed25519 fully specified (the same signature as EdDSA with Ed25519 keys)
+#define COSE_ALG_Ed25519           (-19)
 
 #define COSE_ALG_ECDH_ES_HKDF_256  (-25)
 

@@ -82,7 +82,7 @@ static uint8_t create_attested_credential_data(
 
 	uint8_t public_key[64];
 	ctap_check(ctap_credential_compute_public_key(crypto, credential, public_key));
-	ctap_check(ctap_encode_public_key(&encoder, public_key));
+	ctap_check(ctap_encode_public_key(&encoder, ctap_credential_get_alg(credential), public_key));
 
 	*attested_credential_data_size =
 		sizeof(attested_credential_data->fixed_header)
@@ -165,6 +165,23 @@ static uint8_t compute_signature(
 
 	uint8_t ret;
 
+	// WebAuthn 6.5.5.: EdDSA signs authenticatorData || clientDataHash itself,
+	// the signature is the raw 64 bytes (no ASN.1)
+	if (ctap_credential_is_ed25519(credential)) {
+		uint8_t message[auth_data_size + 32];
+		memcpy(message, auth_data, auth_data_size);
+		memcpy(&message[auth_data_size], client_data_hash, 32);
+		ctap_check(ctap_credential_compute_ed25519_signature(
+			crypto,
+			credential,
+			message,
+			sizeof(message),
+			asn1_der_sig
+		));
+		*asn1_der_sig_size = 64;
+		return CTAP2_OK;
+	}
+
 	// message_hash = SHA256(authenticatorData || clientDataHash)
 	uint8_t message_hash[CTAP_SHA256_HASH_SIZE];
 
@@ -229,7 +246,7 @@ static uint8_t create_self_attestation_statement(
 	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 2));
 	// alg: COSEAlgorithmIdentifier
 	cbor_encoding_check(cbor_encode_text_string(&map, "alg", 3));
-	cbor_encoding_check(cbor_encode_int(&map, COSE_ALG_ES256));
+	cbor_encoding_check(cbor_encode_int(&map, ctap_credential_get_alg(credential)));
 	// sig: bytes
 	cbor_encoding_check(cbor_encode_text_string(&map, "sig", 3));
 	cbor_encoding_check(cbor_encode_byte_string(
@@ -579,7 +596,7 @@ uint8_t ctap_make_credential(ctap_state_t *const state, CborValue *const it, Cbo
 	));
 
 	// 3. Validate pubKeyCredParams and choose the first supported algorithm.
-	ctap_check(ctap_parse_make_credential_pub_key_cred_params(&mc));
+	ctap_check(ctap_parse_make_credential_pub_key_cred_params(&mc, ctap_crypto_supports_eddsa(state->crypto)));
 	debug_log("chosen algorithm = %" PRId32 nl, mc.pubKeyCredParams_chosen.alg);
 
 	// 4. Create a new authenticatorMakeCredential response structure
@@ -755,6 +772,7 @@ uint8_t ctap_make_credential(ctap_state_t *const state, CborValue *const it, Cbo
 		state->crypto,
 		discoverable,
 		credProtect,
+		mc.pubKeyCredParams_chosen.alg,
 		&params->rpId,
 		&mc.user,
 		&credential

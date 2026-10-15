@@ -17,6 +17,8 @@ typedef struct ctap_software_crypto_context {
         .rng_generate_data = ctap_software_crypto_rng_generate_data, \
         .ecc_secp256r1_compute_public_key = ctap_software_crypto_ecc_secp256r1_compute_public_key, \
         .ecc_secp256r1_sign = ctap_software_crypto_ecc_secp256r1_sign, \
+        .ed25519_compute_public_key = ctap_software_crypto_ed25519_compute_public_key, \
+        .ed25519_sign = ctap_software_crypto_ed25519_sign, \
         .ecc_secp256r1_shared_secret = ctap_software_crypto_ecc_secp256r1_shared_secret, \
         .aes_256_cbc_encrypt = ctap_software_crypto_aes_256_cbc_encrypt, \
         .aes_256_cbc_decrypt = ctap_software_crypto_aes_256_cbc_decrypt, \
@@ -39,6 +41,20 @@ ctap_crypto_status_t ctap_software_crypto_rng_generate_data(
 	const ctap_crypto_t *crypto,
 	uint8_t *buffer,
 	size_t length
+);
+
+ctap_crypto_status_t ctap_software_crypto_ed25519_compute_public_key(
+	const ctap_crypto_t *crypto,
+	const uint8_t *private_key,
+	uint8_t *public_key
+);
+
+ctap_crypto_status_t ctap_software_crypto_ed25519_sign(
+	const ctap_crypto_t *crypto,
+	const uint8_t *private_key,
+	const uint8_t *message,
+	size_t message_size,
+	uint8_t *signature
 );
 
 ctap_crypto_status_t ctap_software_crypto_ecc_secp256r1_compute_public_key(

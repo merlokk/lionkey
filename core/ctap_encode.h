@@ -13,8 +13,11 @@ uint8_t ctap_encode_ctap_string_as_text_string(
 	const ctap_string_t *str
 );
 
+// a credential public key as a COSE_Key: ES256 (EC2, x || y, 64 bytes)
+// or EdDSA / Ed25519 (OKP, 32 bytes) with that alg
 uint8_t ctap_encode_public_key(
 	CborEncoder *encoder,
+	COSEAlgorithmIdentifier alg,
 	const uint8_t *public_key
 );
 

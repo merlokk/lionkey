@@ -162,6 +162,7 @@ uint8_t ctap_create_credential(
 	const ctap_crypto_t *crypto,
 	bool discoverable,
 	uint8_t cred_protect,
+	COSEAlgorithmIdentifier alg,
 	const CTAP_rpId *rp_id,
 	const CTAP_userEntity *user,
 	ctap_credential_handle_t *credential
@@ -194,6 +195,12 @@ uint8_t ctap_create_credential(
 	source->flags = cred_protect;
 	if (discoverable) {
 		source->flags |= CTAP_CREDENTIAL_SOURCE_CTAP_flags_discoverable;
+	}
+	// a random 32-byte private key is a valid Ed25519 seed as it is
+	if (alg == COSE_ALG_EdDSA) {
+		source->flags |= CTAP_CREDENTIAL_SOURCE_ALG_EdDSA << CTAP_CREDENTIAL_SOURCE_CTAP_flags_alg_shift;
+	} else if (alg == COSE_ALG_Ed25519) {
+		source->flags |= CTAP_CREDENTIAL_SOURCE_ALG_Ed25519 << CTAP_CREDENTIAL_SOURCE_CTAP_flags_alg_shift;
 	}
 
 	ctap_crypto_check(crypto->rng_generate_data(crypto, source->id, sizeof(source->id)));
@@ -649,11 +656,54 @@ uint8_t ctap_enumerate_rp_ids_of_discoverable_credentials(
 
 }
 
+COSEAlgorithmIdentifier ctap_credential_get_alg(const ctap_credential_handle_t *const credential) {
+	const uint32_t alg = (credential->source->flags & CTAP_CREDENTIAL_SOURCE_CTAP_flags_alg)
+		>> CTAP_CREDENTIAL_SOURCE_CTAP_flags_alg_shift;
+	switch (alg) {
+		case CTAP_CREDENTIAL_SOURCE_ALG_EdDSA:
+			return COSE_ALG_EdDSA;
+		case CTAP_CREDENTIAL_SOURCE_ALG_Ed25519:
+			return COSE_ALG_Ed25519;
+	}
+	return COSE_ALG_ES256;
+}
+
+uint8_t ctap_credential_compute_ed25519_signature(
+	const ctap_crypto_t *const crypto,
+	const ctap_credential_handle_t *const credential,
+	const uint8_t *const message,
+	const size_t message_size,
+	uint8_t *const signature
+) {
+	if (crypto->ed25519_sign == NULL) {
+		return CTAP1_ERR_OTHER;
+	}
+	ctap_crypto_check(crypto->ed25519_sign(
+		crypto,
+		credential->source->private_key,
+		message,
+		message_size,
+		signature
+	));
+	return CTAP2_OK;
+}
+
 uint8_t ctap_credential_compute_public_key(
 	const ctap_crypto_t *const crypto,
 	const ctap_credential_handle_t *const credential,
 	uint8_t *const public_key
 ) {
+	if (ctap_credential_is_ed25519(credential)) {
+		if (crypto->ed25519_compute_public_key == NULL) {
+			return CTAP1_ERR_OTHER;
+		}
+		ctap_crypto_check(crypto->ed25519_compute_public_key(
+			crypto,
+			credential->source->private_key,
+			public_key
+		));
+		return CTAP2_OK;
+	}
 	ctap_crypto_check(crypto->ecc_secp256r1_compute_public_key(
 		crypto,
 		credential->source->private_key,

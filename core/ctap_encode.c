@@ -20,6 +20,7 @@ uint8_t ctap_encode_ctap_string_as_text_string(
 
 uint8_t ctap_encode_public_key(
 	CborEncoder *const encoder,
+	const COSEAlgorithmIdentifier alg,
 	const uint8_t *const public_key
 ) {
 
@@ -28,6 +29,21 @@ uint8_t ctap_encode_public_key(
 
 	CborError err;
 	CborEncoder map;
+
+	// RFC 8152 13.2. Octet Key Pair: {1: 1 (OKP), 3: alg, -1: 6 (Ed25519), -2: x}
+	if (alg == COSE_ALG_EdDSA || alg == COSE_ALG_Ed25519) {
+		cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 4));
+		cbor_encoding_check(cbor_encode_int(&map, COSE_Key_label_kty));
+		cbor_encoding_check(cbor_encode_int(&map, COSE_Key_kty_OKP));
+		cbor_encoding_check(cbor_encode_int(&map, COSE_Key_label_alg));
+		cbor_encoding_check(cbor_encode_int(&map, alg));
+		cbor_encoding_check(cbor_encode_int(&map, COSE_Key_kty_OKP_EC2_label_crv));
+		cbor_encoding_check(cbor_encode_int(&map, COSE_Key_kty_OKP_crv_Ed25519));
+		cbor_encoding_check(cbor_encode_int(&map, COSE_Key_kty_OKP_EC2_label_x));
+		cbor_encoding_check(cbor_encode_byte_string(&map, x, 32));
+		cbor_encoding_check(cbor_encoder_close_container(encoder, &map));
+		return CTAP2_OK;
+	}
 
 	cbor_encoding_check(cbor_encoder_create_map(encoder, &map, 5));
 

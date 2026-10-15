@@ -110,8 +110,15 @@ target_sources(ctap_crypto_software PUBLIC
 		../core/ctap_crypto_software.c
 )
 target_include_directories(ctap_crypto_software PUBLIC ../core)
+add_library(monocypher STATIC)
+target_sources(monocypher PRIVATE
+		../crypto/monocypher/monocypher.c
+		../crypto/monocypher/monocypher-ed25519.c
+)
+target_include_directories(monocypher PUBLIC ../crypto/monocypher)
+
 target_link_libraries(ctap_crypto_software
-		PUBLIC tinyaes micro_ecc tinymt32 sha256
+		PUBLIC tinyaes micro_ecc tinymt32 sha256 monocypher
 )
 
 add_library(core STATIC)
@@ -300,6 +307,7 @@ core_test(ctap_get_assertion)
 core_test(ctap_get_info)
 core_test(ctap_reset)
 core_test(ctap_config)
+core_test(ctap_ed25519)
 core_test(ctap_asn1)
 core_test(ctap_string_truncation)
 core_test(ctaphid)

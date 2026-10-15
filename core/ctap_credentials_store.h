@@ -19,6 +19,12 @@
 #define CTAP_CREDENTIAL_SOURCE_CTAP_flags_truncated_user_name          (1u << 6)
 // user.displayName was truncated for storage
 #define CTAP_CREDENTIAL_SOURCE_CTAP_flags_truncated_user_display_name  (1u << 7)
+// the algorithm (0 = ES256, credentials made before stay ES256): CTAP_CREDENTIAL_SOURCE_ALG_*
+#define CTAP_CREDENTIAL_SOURCE_CTAP_flags_alg_shift                    8u
+#define CTAP_CREDENTIAL_SOURCE_CTAP_flags_alg                          (3u << 8)
+#define CTAP_CREDENTIAL_SOURCE_ALG_ES256    0u
+#define CTAP_CREDENTIAL_SOURCE_ALG_EdDSA    1u  // COSE -8
+#define CTAP_CREDENTIAL_SOURCE_ALG_Ed25519  2u  // COSE -19, the same key and signature
 
 typedef struct LION_ATTR_PACKED ctap_credential_source {
 	uint32_t flags;
@@ -148,6 +154,14 @@ LION_ATTR_ALWAYS_INLINE static inline const uint8_t *ctap_credential_get_cred_ra
 		: credential->source->cred_random_without_uv;
 }
 
+// the credential's COSE algorithm (COSE_ALG_ES256, COSE_ALG_EdDSA or COSE_ALG_Ed25519)
+COSEAlgorithmIdentifier ctap_credential_get_alg(const ctap_credential_handle_t *credential);
+
+LION_ATTR_ALWAYS_INLINE static inline bool ctap_credential_is_ed25519(const ctap_credential_handle_t *credential) {
+	return ctap_credential_get_alg(credential) != COSE_ALG_ES256;
+}
+
+// the public key: ES256 x || y (64 bytes), Ed25519 32 bytes
 uint8_t ctap_credential_compute_public_key(
 	const ctap_crypto_t *crypto,
 	const ctap_credential_handle_t *credential,
@@ -159,6 +173,15 @@ uint8_t ctap_credential_compute_signature(
 	const ctap_credential_handle_t *credential,
 	const uint8_t *message_hash,
 	size_t message_hash_size,
+	uint8_t *signature
+);
+
+// Ed25519 credentials: signs the message itself (64-byte signature)
+uint8_t ctap_credential_compute_ed25519_signature(
+	const ctap_crypto_t *crypto,
+	const ctap_credential_handle_t *credential,
+	const uint8_t *message,
+	size_t message_size,
 	uint8_t *signature
 );
 
@@ -189,6 +212,7 @@ uint8_t ctap_create_credential(
 	const ctap_crypto_t *crypto,
 	bool discoverable,
 	uint8_t cred_protect,
+	COSEAlgorithmIdentifier alg,
 	const CTAP_rpId *rp_id,
 	const CTAP_userEntity *user,
 	ctap_credential_handle_t *credential

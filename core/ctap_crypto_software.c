@@ -1,5 +1,8 @@
 #include "ctap_crypto_software.h"
 #include "compiler.h"
+#include <string.h>
+#include <monocypher.h>
+#include <monocypher-ed25519.h>
 
 #include "aes.h"
 #include <uECC.h>
@@ -78,6 +81,39 @@ ctap_crypto_status_t ctap_software_crypto_rng_generate_data(
 		}
 	}
 
+	return CTAP_CRYPTO_OK;
+}
+
+// Ed25519 with Monocypher (crypto/monocypher). Its key pair function wipes the seed: a copy.
+ctap_crypto_status_t ctap_software_crypto_ed25519_compute_public_key(
+	const ctap_crypto_t *const crypto,
+	const uint8_t *const private_key,
+	uint8_t *const public_key
+) {
+	lion_unused(crypto);
+	uint8_t seed[32];
+	uint8_t secret_key[64];
+	memcpy(seed, private_key, sizeof(seed));
+	crypto_ed25519_key_pair(secret_key, public_key, seed);
+	crypto_wipe(secret_key, sizeof(secret_key));
+	return CTAP_CRYPTO_OK;
+}
+
+ctap_crypto_status_t ctap_software_crypto_ed25519_sign(
+	const ctap_crypto_t *const crypto,
+	const uint8_t *const private_key,
+	const uint8_t *const message,
+	const size_t message_size,
+	uint8_t *const signature
+) {
+	lion_unused(crypto);
+	uint8_t seed[32];
+	uint8_t secret_key[64];
+	uint8_t public_key[32];
+	memcpy(seed, private_key, sizeof(seed));
+	crypto_ed25519_key_pair(secret_key, public_key, seed);
+	crypto_ed25519_sign(signature, secret_key, message, message_size);
+	crypto_wipe(secret_key, sizeof(secret_key));
 	return CTAP_CRYPTO_OK;
 }
 
