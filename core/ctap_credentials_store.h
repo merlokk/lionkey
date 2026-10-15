@@ -25,6 +25,8 @@
 #define CTAP_CREDENTIAL_SOURCE_ALG_ES256    0u
 #define CTAP_CREDENTIAL_SOURCE_ALG_EdDSA    1u  // COSE -8
 #define CTAP_CREDENTIAL_SOURCE_ALG_Ed25519  2u  // COSE -19, the same key and signature
+// made by U2F_REGISTER: no RP ID string, the RP ID hash is the U2F application parameter
+#define CTAP_CREDENTIAL_SOURCE_CTAP_flags_u2f                          (1u << 10)
 
 typedef struct LION_ATTR_PACKED ctap_credential_source {
 	uint32_t flags;
@@ -213,6 +215,7 @@ uint8_t ctap_create_credential(
 	bool discoverable,
 	uint8_t cred_protect,
 	COSEAlgorithmIdentifier alg,
+	uint32_t extra_flags, // e.g. CTAP_CREDENTIAL_SOURCE_CTAP_flags_u2f
 	const CTAP_rpId *rp_id,
 	const CTAP_userEntity *user,
 	ctap_credential_handle_t *credential

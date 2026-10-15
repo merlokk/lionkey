@@ -773,6 +773,7 @@ uint8_t ctap_make_credential(ctap_state_t *const state, CborValue *const it, Cbo
 		discoverable,
 		credProtect,
 		mc.pubKeyCredParams_chosen.alg,
+		0u,
 		&params->rpId,
 		&mc.user,
 		&credential

@@ -124,6 +124,7 @@ target_link_libraries(ctap_crypto_software
 add_library(core STATIC)
 target_sources(core PUBLIC
 		../core/ctap.c
+		../core/ctap1.c
 		../core/ctap_asn1.c
 		../core/ctap_config.c
 		../core/ctap_credential_management.c
@@ -308,6 +309,7 @@ core_test(ctap_get_info)
 core_test(ctap_reset)
 core_test(ctap_config)
 core_test(ctap_ed25519)
+core_test(ctap1)
 core_test(ctap_asn1)
 core_test(ctap_string_truncation)
 core_test(ctaphid)

@@ -62,7 +62,9 @@ bool ctap_credential_matches_rp(
 	const CTAP_rpId *rp_id
 ) {
 	// if the RP ID was NOT truncated, then we can compare the exact RP ID values
-	if ((credential->source->flags & CTAP_CREDENTIAL_SOURCE_CTAP_flags_truncated_rp_id) == 0u) {
+	// (a U2F credential has only the hash: e.g. the appid extension, rpId = the AppID)
+	const uint32_t hash_only = CTAP_CREDENTIAL_SOURCE_CTAP_flags_truncated_rp_id | CTAP_CREDENTIAL_SOURCE_CTAP_flags_u2f;
+	if ((credential->source->flags & hash_only) == 0u) {
 		ctap_string_t cred_rp_id;
 		ctap_credential_get_rp_id(credential, &cred_rp_id);
 		if (ctap_string_matches(&cred_rp_id, &rp_id->id)) {
@@ -163,6 +165,7 @@ uint8_t ctap_create_credential(
 	bool discoverable,
 	uint8_t cred_protect,
 	COSEAlgorithmIdentifier alg,
+	uint32_t extra_flags,
 	const CTAP_rpId *rp_id,
 	const CTAP_userEntity *user,
 	ctap_credential_handle_t *credential
@@ -192,7 +195,7 @@ uint8_t ctap_create_credential(
 	ctap_credential_source_t *const source = (ctap_credential_source_t *) tmp_source_buffer;
 
 	assert(cred_protect <= CTAP_CREDENTIAL_SOURCE_CTAP_flags_credProtect);
-	source->flags = cred_protect;
+	source->flags = cred_protect | extra_flags;
 	if (discoverable) {
 		source->flags |= CTAP_CREDENTIAL_SOURCE_CTAP_flags_discoverable;
 	}

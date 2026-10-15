@@ -13,6 +13,8 @@ typedef enum ctap_storage_key {
 	CTAP_STORAGE_KEY_CONFIG = 4,
 	// minPinLength extension: SHA-256 of each RP ID allowed to read the minimum PIN length
 	CTAP_STORAGE_KEY_MIN_PIN_LENGTH_RP_IDS = 5,
+	// U2F_REGISTER attestation: the private key (32 bytes) and its self-signed certificate (DER)
+	CTAP_STORAGE_KEY_U2F_ATTESTATION = 6,
 } ctap_storage_key_t;
 
 typedef enum ctap_storage_status {
